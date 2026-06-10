@@ -125,24 +125,83 @@ def get_channels():
     response = requests.request("POST", url, data=payload, headers=headers)
     # 检查请求是否成功
     if response.status_code == 200:
-        # 正则表达式提取 ChannelName 和 ChannelURL
-        pattern = r'ChannelName="([^"]+)",.*?ChannelURL="([^"]+)"'
-        # 查找所有匹配的内容
-        matches = re.findall(pattern, response.text)
-        if matches:
-            # 输出每个匹配的 ChannelName 和 ChannelURL
-            channels = []
-            for match in matches:
-                channel_name = match[0]
-                channel_url = match[1].replace('igmp://', '')
-                channels.append(f"{channel_name},{UDPXY}{channel_url}")
+        # 正则表达式提取每个完整的 jsSetConfig('Channel', ...) 块
+        # 每个频道数据格式如: jsSetConfig('Channel','ChannelID="...",ChannelName="CCTV1",...ChannelURL="igmp://...",...ChannelSDP="igmp://...|rtsp://...",...');
+        channel_blocks = re.findall(r"jsSetConfig\('Channel',\s*'([^']+)'\)", response.text)
+        if channel_blocks:
+            channels_udpxy = []
+            channels_rtsp = []
+            # 用于提取 AuthInfo 中的时间戳线索
+            usersessionid = ""
+            for block in channel_blocks:
+                # 提取 ChannelName
+                name_match = re.search(r'ChannelName="([^"]*)"', block)
+                if not name_match:
+                    continue
+                channel_name = name_match.group(1)
+
+                # 提取 ChannelURL 中的 igmp 地址
+                url_match = re.search(r'ChannelURL="([^"]*)"', block)
+                if not url_match:
+                    continue
+                channel_url = url_match.group(1)
+
+                # --- UDPXY 版本（igmp 转 http） ---
+                igmp_addr = channel_url.replace('igmp://', '')
+                channels_udpxy.append(f"{channel_name},{UDPXY}{igmp_addr}")
+
+                # --- RTSP 点播版本 ---
+                # 优先从 ChannelSDP 提取，格式: igmp://...|rtsp://...
+                rtsp_url = ""
+                sdp_match = re.search(r'ChannelSDP="[^"]*?(rtsp://[^"]+)"', block)
+                if sdp_match:
+                    rtsp_url = sdp_match.group(1)
+                else:
+                    # 其次从 TimeShiftURL 提取
+                    ts_match = re.search(r'TimeShiftURL="[^"]*?(rtsp://[^"]+)"', block)
+                    if ts_match:
+                        rtsp_url = ts_match.group(1)
+                    else:
+                        # 最后从 ChannelURL 本身找 rtsp
+                        url_rtsp = re.search(r'rtsp://[^"]+', channel_url)
+                        if url_rtsp:
+                            rtsp_url = url_rtsp.group(0)
+
+                if rtsp_url:
+                    channels_rtsp.append(f"{channel_name},{rtsp_url}")
+
+                # 提取 usersessionid 用于分析有效期
+                if not usersessionid:
+                    usid_match = re.search(r'usersessionid=(\d+)', block)
+                    if usid_match:
+                        usersessionid = usid_match.group(1)
+
+            # 保存 UDPXY 版本（保持向后兼容）
             with open('static/channels.txt', 'w', encoding='utf-8') as file:
-                for channel in channels:
+                for channel in channels_udpxy:
                     file.write(channel + '\n')
-            log_message("更新成功")
+
+            # 保存 RTSP 版本
+            with open('static/channels_rtsp.txt', 'w', encoding='utf-8') as file:
+                for channel in channels_rtsp:
+                    file.write(channel + '\n')
+
+            # 保存同步时间戳和会话信息，用于前端展示有效期
+            now = datetime.now()
+            sync_info = {
+                "last_sync_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "last_sync_timestamp": int(now.timestamp()),
+                "usersessionid": usersessionid,
+                "channel_count_udpxy": len(channels_udpxy),
+                "channel_count_rtsp": len(channels_rtsp)
+            }
+            with open('static/sync_info.json', 'w', encoding='utf-8') as f:
+                json.dump(sync_info, f, indent=4, ensure_ascii=False)
+
+            log_message(f"更新成功，获取到 {len(channels_udpxy)} 个UDPXY频道，{len(channels_rtsp)} 个RTSP频道")
             return "同步成功！"
         else:
-            log_message("组播地址获取失败")
+            log_message("频道数据获取失败")
             return "同步失败！"
     else:
         return f"访问失败！ {response.status_code}"
@@ -155,6 +214,13 @@ def get_channels_content():
     except FileNotFoundError:
         return "暂无频道数据"
 
+def get_channels_rtsp_content():
+    try:
+        with open('static/channels_rtsp.txt', 'r', encoding='utf-8') as file:
+            return file.read()
+    except FileNotFoundError:
+        return "暂无频道数据"
+
 def get_logs_content():
     try:
         with open('static/relogs.txt', 'r', encoding='utf-8') as file:
@@ -162,12 +228,22 @@ def get_logs_content():
     except FileNotFoundError:
         return "暂无日志"
 
+def get_sync_info():
+    """获取同步信息"""
+    try:
+        with open('static/sync_info.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
 @app.route('/')
 def index():
     config = load_config()
     channels = get_channels_content()
+    channels_rtsp = get_channels_rtsp_content()
     logs = get_logs_content()
-    return render_template('index.html', config=config, channels=channels, logs=logs)
+    sync_info = get_sync_info()
+    return render_template('index.html', config=config, channels=channels, channels_rtsp=channels_rtsp, logs=logs, sync_info=sync_info)
 
 @app.route('/save_config', methods=['POST'])
 def save_config():
