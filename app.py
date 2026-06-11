@@ -60,13 +60,27 @@ def generate_sub(channel_file):
         if not channels:
             return "暂无频道数据", 404
 
+        # 判断是否为 RTSP 频道（需要添加 APTV 回看支持）
+        is_rtsp = 'rtsp' in channel_file
+
         # 构建订阅内容
         sub_content = '#EXTM3U\n'
         for line in channels:
             if line.strip():  # 跳过空行
-                name, url = line.strip().split(',')
-                sub_content += f'#EXTINF:-1 tvg-name="{name}",{name}\n{url}\n'
-        
+                parts = line.strip().split(',', 2)
+                name = parts[0]
+                if is_rtsp and len(parts) == 3:
+                    # 三字段：频道名,带变量的URL（catchup-source）,原始URL（实际播放）
+                    catchup_url = parts[1]
+                    play_url = parts[2]
+                    sub_content += f'#EXTINF:-1 tvg-id="" tvg-name="{name}" tvg-logo="" group-title="" catchup="default" catchup-source="{catchup_url}",{name}\n'
+                    sub_content += f'{play_url}\n'
+                else:
+                    # 两字段：频道名,URL（UDPXY版本）
+                    url = parts[1]
+                    sub_content += f'#EXTINF:-1 tvg-id="" tvg-name="{name}" tvg-logo="" group-title="",{name}\n'
+                    sub_content += f'{url}\n'
+
         # 返回文本内容，设置正确的 Content-Type
         response = app.make_response(sub_content)
         response.headers['Content-Type'] = 'text/plain; charset=utf-8'

@@ -168,7 +168,12 @@ def get_channels():
                             rtsp_url = url_rtsp.group(0)
 
                 if rtsp_url:
-                    channels_rtsp.append(f"{channel_name},{rtsp_url}")
+                    # 生成带时间变量的 URL（用于 APTV catchup-source）
+                    if '?' in rtsp_url:
+                        rtsp_url_catchup = rtsp_url + '&starttime=${(b)yyyyMMddHHmmss}&endtime=${(e)yyyyMMddHHmmss}'
+                    else:
+                        rtsp_url_catchup = rtsp_url + '?starttime=${(b)yyyyMMddHHmmss}&endtime=${(e)yyyyMMddHHmmss}'
+                    channels_rtsp.append(f"{channel_name},{rtsp_url_catchup},{rtsp_url}")
 
                 # 提取 usersessionid 用于分析有效期
                 if not usersessionid:

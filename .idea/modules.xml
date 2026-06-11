@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/AutoReIPTVChannels.iml" filepath="$PROJECT_DIR$/.idea/AutoReIPTVChannels.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/AutoIPTV.iml" filepath="$PROJECT_DIR$/.idea/AutoIPTV.iml" />
     </modules>
   </component>
 </project>
