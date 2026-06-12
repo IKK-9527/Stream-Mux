@@ -1,0 +1,53 @@
+name: Build and Push Docker Image to Gitea Registry
+
+on:
+  push:
+    branches: [ main, master ]  # 推送主分支时触发
+    tags: [ 'v*' ]               # 推送版本标签时触发
+
+env:
+  # Gitea 内置镜像仓库地址（去掉 http:// 前缀）
+  REGISTRY: git.9ruo.com  # 改成你的 Gitea 服务器地址
+  # 仓库所有者（你的用户名或组织名）
+  OWNER: kaixin  # 改成你的用户名
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 登录到 Gitea 内置镜像仓库
+      - name: Login to Gitea Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.USERNAME }}
+          password: ${{ secrets.TOKEN }}
+
+      # 获取镜像元数据（自动生成标签）
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ github.event.repository.name }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # 构建并推送镜像
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 启用构建缓存加速
+          #cache-from: type=gha
+          #cache-to: type=gha,mode=max
