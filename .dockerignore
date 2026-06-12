@@ -1,0 +1,11 @@
+.venv
+.idea
+.git
+.gitignore
+__pycache__
+*.pyc
+.DS_Store
+static/config.json
+static/relogs.txt
+static/channels*.txt
+static/sync_info.json
