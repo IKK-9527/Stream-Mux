@@ -5,6 +5,7 @@ from main import get_channels, index, save_config, get_sync_info, get_epg  # 从
 import requests
 import json
 import re
+import random
 from datetime import datetime
 
 app = Flask(__name__)
@@ -163,7 +164,7 @@ def rtsp_status():
         "usersessionid": usersessionid,
         "session_hint": session_hint,
         "message": message,
-        "sync_schedule": "每天 16:00 自动同步"
+        "sync_schedule": "每天 13:00~17:00 间随机时间自动同步"
     })
 
 # EPG 节目单 - XMLTV 格式（兼容 APTV/Tvheadend 等）
@@ -268,12 +269,14 @@ def job():
         get_channels()  # 同步频道列表
         get_epg(refresh=True)  # 同步 EPG 节目数据
 
-# 启动调度器
+# 启动调度器（每天随机时间 13:00~16:59 执行）
 def start_scheduler():
     scheduler = BackgroundScheduler()
-    # 使用 Cron 表达式，每天的特定时间（例如，16:00）执行任务
-    trigger = CronTrigger(hour=16, minute=0)  # 每天 16:00 执行
+    rand_hour = random.randint(13, 16)
+    rand_min = random.randint(0, 59)
+    trigger = CronTrigger(hour=rand_hour, minute=rand_min)
     scheduler.add_job(job, trigger)
+    print(f"定时任务已启动: 每天 {rand_hour:02d}:{rand_min:02d} 自动同步")
     scheduler.start()
 
 # 在应用启动时启动调度器
