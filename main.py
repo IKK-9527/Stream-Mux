@@ -473,12 +473,12 @@ def build_xmltv(programs):
     return '\n'.join(lines)
 
 
-def get_epg(refresh=False, days=2):
+def get_epg(refresh=False, days=8):
     """获取 EPG 数据，优先使用缓存
-    days: 抓取天数，days=8 表示过去6天+今天+明天"""
+    days: 抓取天数，默认8天=过去6天(回看)+今天+明天"""
     cache_file = 'static/epg_cache.json'
     xml_file = 'static/epg.xml'
-    
+
     if not refresh:
         # 尝试从缓存读取
         try:
@@ -491,12 +491,12 @@ def get_epg(refresh=False, days=2):
                     return cached.get('programs', [])
         except (FileNotFoundError, json.JSONDecodeError):
             pass
-    
-    # 计算需要抓取的日期索引（EPG 服务器 dateIndex:-1=昨天, 0=今天, 1=明天）
+
+    # 计算需要抓取的日期索引
+    # EPG 服务器: dateIndex:-6~-1=过去6天, 0=今天(dS=2), 1=明天
     if days >= 2:
-        # days=2 -> dateIndex: -1(昨天), 0(今天), 1(明天)
-        # days=8 -> dateIndex: -7,...,-1(过去7天), 0(今天), 1,...,7(未来7天)
-        date_indexes = list(range(-(days - 1), days))
+        past_days = max(days - 2, 1)  # 至少1天过去数据
+        date_indexes = list(range(-past_days, 2))  # 过去N天 + 今天(0) + 明天(1)
     else:
         date_indexes = [0]
     
@@ -575,7 +575,3 @@ def save_config():
         log_message(f"保存配置失败：{str(e)}")
         flash(f'保存配置失败：{str(e)}')
         return redirect(url_for('index'))
-
-
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)

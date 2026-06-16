@@ -170,7 +170,7 @@ def rtsp_status():
 @app.route('/epg.xml')
 def epg_xml():
     refresh = request.args.get('refresh', '').lower() in ('true', '1')
-    days = request.args.get('days', 2, type=int)
+    days = request.args.get('days', 8, type=int)
     try:
         get_epg(refresh=refresh, days=days)  # 确保数据已生成
         with open('static/epg.xml', 'r', encoding='utf-8') as f:
@@ -183,11 +183,56 @@ def epg_xml():
 @app.route('/api/epg')
 def api_epg():
     refresh = request.args.get('refresh', '').lower() in ('true', '1')
-    days = request.args.get('days', 2, type=int)
+    days = request.args.get('days', 8, type=int)
     programs = get_epg(refresh=refresh, days=days)
     return jsonify({
         'total': len(programs),
         'programs': programs
+    })
+
+# EPG - 获取可用日期列表
+@app.route('/api/epg/dates')
+def api_epg_dates():
+    programs = get_epg()
+    dates = sorted(set(p['start'][:8] for p in programs))
+    return jsonify({'dates': dates})
+
+# EPG - 获取有 EPG 数据的频道及其节目数
+@app.route('/api/epg/channels')
+def api_epg_channels():
+    programs = get_epg()
+    from collections import Counter
+    channel_counts = Counter(p['channel_name'] for p in programs)
+    channels = [{'name': name, 'count': count} for name, count in channel_counts.items()]
+    channels.sort(key=lambda x: -x['count'])
+    return jsonify({'channels': channels, 'total': len(channels)})
+
+# EPG - 分页查询节目（按日期+频道筛选）
+@app.route('/api/epg/programs')
+def api_epg_programs():
+    date = request.args.get('date', '')
+    channel_id = request.args.get('channel_id', '')
+    channel_name = request.args.get('channel_name', '')
+    offset = request.args.get('offset', 0, type=int)
+    limit = request.args.get('limit', 50, type=int)
+
+    programs = get_epg()
+    # 筛选
+    if date:
+        programs = [p for p in programs if p['start'].startswith(date)]
+    if channel_id:
+        programs = [p for p in programs if p['channel_id'] == channel_id]
+    if channel_name:
+        programs = [p for p in programs if p['channel_name'] == channel_name]
+
+    total = len(programs)
+    # 分页
+    page = programs[offset:offset + limit]
+    return jsonify({
+        'total': total,
+        'offset': offset,
+        'limit': limit,
+        'programs': page
     })
 
 # 手动刷新 EPG
@@ -234,4 +279,4 @@ def start_scheduler():
 # 在应用启动时启动调度器
 if __name__ == '__main__':
     start_scheduler()  # 启动调度器
-    app.run(debug=True, host='0.0.0.0', port=8081)
+    app.run(debug=False, host='0.0.0.0', port=8899)

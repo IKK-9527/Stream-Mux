@@ -11,6 +11,6 @@ COPY app.py main.py config.py ./
 COPY templates ./templates
 COPY static ./static
 
-EXPOSE 5000
+EXPOSE 8899
 ENV TZ=Asia/Shanghai
 CMD ["python", "app.py"]

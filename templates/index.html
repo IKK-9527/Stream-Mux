@@ -1,507 +1,798 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
-    <title>重庆电信IPTV直播源抓取</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoIPTV - 重庆电信IPTV直播源管理</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
     <style>
-        .container { max-width: 800px; }
-        .card { margin-top: 2rem; }
-        .tab-content { padding-top: 2rem; }
-        pre { max-height: 500px; overflow-y: auto; }
+        :root {
+            --sidebar-width: 240px;
+            --sidebar-bg: #1a1d23;
+            --sidebar-hover: #2a2d35;
+            --accent: #4f8cff;
+            --accent-light: #e8f0ff;
+            --card-radius: 12px;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #f0f2f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+
+        /* Sidebar */
+        .sidebar {
+            position: fixed; left: 0; top: 0; bottom: 0; width: var(--sidebar-width);
+            background: var(--sidebar-bg); z-index: 100;
+            display: flex; flex-direction: column; transition: transform .3s;
+        }
+        .sidebar-brand {
+            padding: 20px 20px; font-size: 18px; font-weight: 700;
+            color: #fff; border-bottom: 1px solid rgba(255,255,255,.08);
+            display: flex; align-items: center; gap: 10px;
+        }
+        .sidebar-brand i { font-size: 24px; color: var(--accent); }
+        .sidebar-nav { flex: 1; padding: 12px 0; overflow-y: auto; }
+        .nav-item {
+            display: flex; align-items: center; gap: 12px;
+            padding: 11px 20px; color: #9ba1b0; cursor: pointer;
+            transition: all .15s; border-left: 3px solid transparent;
+            text-decoration: none; font-size: 14px;
+        }
+        .nav-item:hover { background: var(--sidebar-hover); color: #d0d4dd; }
+        .nav-item.active { background: rgba(79,140,255,.1); color: var(--accent); border-left-color: var(--accent); }
+        .nav-item i { font-size: 18px; width: 22px; text-align: center; }
+        .nav-item .badge { margin-left: auto; font-size: 11px; }
+        .sidebar-footer {
+            padding: 16px 20px; border-top: 1px solid rgba(255,255,255,.08);
+            font-size: 12px; color: #5a6070;
+        }
+
+        /* Main content */
+        .main { margin-left: var(--sidebar-width); min-height: 100vh; }
+        .header {
+            background: #fff; padding: 16px 28px; border-bottom: 1px solid #e8eaed;
+            display: flex; align-items: center; justify-content: space-between;
+            position: sticky; top: 0; z-index: 50;
+        }
+        .header h5 { margin: 0; font-weight: 600; color: #1a1d23; }
+        .header .subtitle { font-size: 13px; color: #6b7280; }
+        .content { padding: 24px 28px; }
+
+        /* Cards */
+        .stat-card {
+            background: #fff; border-radius: var(--card-radius); padding: 20px;
+            border: 1px solid #e8eaed; transition: box-shadow .2s;
+        }
+        .stat-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,.06); }
+        .stat-card .icon {
+            width: 44px; height: 44px; border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 20px; margin-bottom: 12px;
+        }
+        .stat-card .value { font-size: 26px; font-weight: 700; color: #1a1d23; }
+        .stat-card .label { font-size: 13px; color: #6b7280; margin-top: 2px; }
+        .icon-blue { background: var(--accent-light); color: var(--accent); }
+        .icon-green { background: #e6f7ed; color: #10b981; }
+        .icon-orange { background: #fff7e6; color: #f59e0b; }
+        .icon-red { background: #fde8e8; color: #ef4444; }
+
+        /* Section card */
+        .section-card {
+            background: #fff; border-radius: var(--card-radius);
+            border: 1px solid #e8eaed; margin-bottom: 20px;
+        }
+        .section-card .card-header {
+            padding: 16px 20px; border-bottom: 1px solid #e8eaed;
+            display: flex; align-items: center; justify-content: space-between;
+            background: transparent; font-weight: 600; font-size: 15px;
+        }
+        .section-card .card-body { padding: 20px; }
+
+        /* Tables */
+        .table-wrap { max-height: 540px; overflow-y: auto; }
+        .table-wrap table { margin: 0; font-size: 13px; }
+        .table-wrap thead { position: sticky; top: 0; z-index: 2; }
+        .table-wrap thead th { background: #f8f9fb; border-bottom: 2px solid #e8eaed; padding: 10px 12px; font-weight: 600; font-size: 12px; text-transform: uppercase; color: #6b7280; letter-spacing: .3px; }
+
+        /* Form */
+        .form-control, .form-select {
+            border-radius: 8px; border-color: #d1d5db; font-size: 14px;
+        }
+        .form-control:focus, .form-select:focus {
+            border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,140,255,.12);
+        }
+        .btn { border-radius: 8px; font-size: 14px; padding: 7px 16px; font-weight: 500; }
+        .btn-primary { background: var(--accent); border-color: var(--accent); }
+        .btn-primary:hover { background: #3a7be8; border-color: #3a7be8; }
+
+        /* Toast */
+        .toast-container {
+            position: fixed; bottom: 24px; right: 24px; z-index: 9999;
+        }
+        .toast-msg {
+            padding: 12px 20px; border-radius: 10px; margin-top: 8px;
+            font-size: 14px; color: #fff; animation: slideIn .3s ease;
+            box-shadow: 0 4px 16px rgba(0,0,0,.15);
+        }
+        .toast-msg.success { background: #10b981; }
+        .toast-msg.error { background: #ef4444; }
+        .toast-msg.info { background: var(--accent); }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+        /* Loading skeleton */
+        .skeleton {
+            background: linear-gradient(90deg, #e8eaed 25%, #f0f2f5 50%, #e8eaed 75%);
+            background-size: 200% 100%; animation: shimmer 1.5s infinite;
+            border-radius: 6px; height: 16px; margin: 8px 0;
+        }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar { transform: translateX(-100%); }
+            .sidebar.open { transform: translateX(0); }
+            .main { margin-left: 0; }
+            .content { padding: 16px; }
+            .header { padding: 12px 16px; }
+            .menu-toggle { display: block !important; }
+        }
+        .menu-toggle { display: none; background: none; border: none; font-size: 22px; color: #1a1d23; cursor: pointer; padding: 4px; }
+
+        /* Page transitions */
+        .page { display: none; }
+        .page.active { display: block; animation: fadeIn .2s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* RTSP status bar */
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .status-dot.green { background: #10b981; }
+        .status-dot.yellow { background: #f59e0b; }
+        .status-dot.red { background: #ef4444; }
+        .status-dot.gray { background: #9ca3af; }
+
+        /* EPG time table */
+        .epg-time { font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; color: #6b7280; }
+        .epg-title { font-weight: 500; color: #1a1d23; }
+
+        /* Pagination */
+        .pagination-info { font-size: 13px; color: #6b7280; }
+        .page-btn {
+            min-width: 34px; height: 34px; border-radius: 8px; border: 1px solid #d1d5db;
+            background: #fff; color: #374151; font-size: 13px; cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center; transition: all .15s;
+        }
+        .page-btn:hover { border-color: var(--accent); color: var(--accent); }
+        .page-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+        .page-btn:disabled { opacity: .4; cursor: default; }
     </style>
 </head>
-<body class="bg-light">
-    <nav class="navbar navbar-dark bg-primary">
-        <div class="container">
-            <span class="navbar-brand">重庆电信IPTV直播源抓取</span>
-        </div>
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+        <i class="bi-tv"></i> AutoIPTV
+    </div>
+    <nav class="sidebar-nav">
+        <a class="nav-item active" data-page="dashboard" href="#" onclick="switchPage('dashboard')">
+            <i class="bi-speedometer2"></i> 仪表盘
+        </a>
+        <a class="nav-item" data-page="channels" href="#" onclick="switchPage('channels')">
+            <i class="bi-list-ul"></i> 频道列表
+            <span class="badge bg-secondary rounded-pill" id="nav-channel-count">0</span>
+        </a>
+        <a class="nav-item" data-page="epg" href="#" onclick="switchPage('epg')">
+            <i class="bi-calendar-week"></i> EPG 节目单
+            <span class="badge bg-info rounded-pill" id="nav-epg-count">0</span>
+        </a>
+        <a class="nav-item" data-page="config" href="#" onclick="switchPage('config')">
+            <i class="bi-gear"></i> 系统配置
+        </a>
+        <a class="nav-item" data-page="logs" href="#" onclick="switchPage('logs')">
+            <i class="bi-journal-text"></i> 系统日志
+        </a>
     </nav>
+    <div class="sidebar-footer">
+        <i class="bi bi-check-circle-fill" style="color:#10b981;font-size:10px"></i> 服务运行中
+        <br>v2.0 · 每天16:00自动同步
+    </div>
+</div>
 
-    <div class="container">
-        {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                {% for message in messages %}
-                    <div class="alert alert-info alert-dismissible fade show mt-3" role="alert">
-                        {{ message }}
-                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-                    </div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-        <!-- 标签页导航 -->
-        <ul class="nav nav-tabs mt-4" id="myTab" role="tablist">
-            <li class="nav-item" role="presentation">
-                <button class="nav-link active" id="config-tab" data-bs-toggle="tab" data-bs-target="#config" type="button">系统配置</button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="channels-tab" data-bs-toggle="tab" data-bs-target="#channels" type="button">频道列表(UDPXY)</button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="channels-rtsp-tab" data-bs-toggle="tab" data-bs-target="#channels-rtsp" type="button">频道列表(RTSP)</button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs" type="button">系统日志</button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="epg-tab" data-bs-toggle="tab" data-bs-target="#epg" type="button">节目指南(EPG)</button>
-            </li>
-        </ul>
-
-        <!-- 标签页内容 -->
-        <div class="tab-content" id="myTabContent">
-            <!-- 系统配置 -->
-            <div class="tab-pane fade show active" id="config" role="tabpanel">
-                <div class="card">
-                    <div class="card-header bg-primary text-white">
-                        <h5 class="mb-0">系统配置</h5>
-                    </div>
-                    <div class="card-body">
-                        <form method="post" action="/save_config">
-                            <div class="mb-3">
-                                <label class="form-label">UDPXY地址</label>
-                                <input type="text" class="form-control" name="udpxy" value="{{ config.UDPXY }}" placeholder="例如：http://10.10.10.1:7088/udp/">
-                                <div class="form-text">UDPXY服务器地址，用于转换IGMP协议为HTTP协议</div>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">BASE_URL</label>
-                                <input type="text" class="form-control" name="base_url" value="{{ config.BASE_URL }}">
-                                <div class="form-text">IPTV认证地址</div>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">USER_ID</label>
-                                <input type="text" class="form-control" name="user_id" value="{{ config.USER_ID }}" 
-                                    placeholder="例如：i520000000@itv" required>
-                                <div class="form-text">IPTV用户ID（必填）</div>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">STBID</label>
-                                <input type="text" class="form-control" name="stbid" value="{{ config.STBID }}" required>
-                                <div class="form-text">机顶盒ID，抓包获取，或者机顶盒背面获取（必填）</div>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">USER_AGENT</label>
-                                <input type="text" class="form-control" name="user_agent" value="{{ config.USER_AGENT }}">
-                                <div class="form-text">用户代理字符串</div>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">Authenticator</label>
-                                <input type="text" class="form-control" name="authenticator" value="{{ config.Authenticator }}" required>
-                                <div class="form-text">认证密钥，抓包获取（必填）</div>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">EPG服务器地址</label>
-                                <input type="text" class="form-control" name="epg_host" value="{{ config.get('EPG_HOST', 'http://172.23.35.201:8080') }}">
-                                <div class="form-text">节目指南数据源服务器地址</div>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">UDPXY订阅地址</label>
-                                <div class="input-group">
-                                    <input type="text" class="form-control" id="subUrl" value="{{ request.host_url }}sub" readonly>
-                                    <button class="btn btn-outline-secondary" type="button" onclick="copyText('subUrl')">复制</button>
-                                </div>
-                                <div class="form-text">复制此地址到您的播放器中使用（IGMP转HTTP）</div>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">RTSP点播订阅地址</label>
-                                <div class="input-group">
-                                    <input type="text" class="form-control" id="subRtspUrl" value="{{ request.host_url }}sub_rtsp" readonly>
-                                    <button class="btn btn-outline-secondary" type="button" onclick="copyText('subRtspUrl')">复制</button>
-                                </div>
-                                <div class="form-text">复制此地址到播放器中使用（RTSP点播，VLC等播放器可直接播放）</div>
-                            </div>
-                            <button type="submit" class="btn btn-primary">保存配置</button>
-                            <button type="button" class="btn btn-secondary" onclick="syncChannels()" id="syncBtn">刷新频道列表</button>
-                            <span id="syncStatus" class="ms-2"></span>
-                        </form>
-                    </div>
-                </div>
+<!-- Main -->
+<div class="main">
+    <div class="header">
+        <div class="d-flex align-items-center gap-2">
+            <button class="menu-toggle" onclick="document.getElementById('sidebar').classList.toggle('open')">
+                <i class="bi-list"></i>
+            </button>
+            <div>
+                <h5 id="page-title">仪表盘</h5>
+                <div class="subtitle" id="page-subtitle">系统概览与状态</div>
             </div>
-
-            <!-- 频道列表 UDPXY -->
-            <div class="tab-pane fade" id="channels" role="tabpanel">
-                <div class="card">
-                    <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">频道列表 (UDPXY)</h5>
-                        <button class="btn btn-light btn-sm" onclick="refreshTab('channels')">刷新</button>
-                    </div>
-                    <div class="card-body">
-                        <pre class="mb-0">{{ channels }}</pre>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 频道列表 RTSP -->
-            <div class="tab-pane fade" id="channels-rtsp" role="tabpanel">
-                <div class="card">
-                    <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">频道列表 (RTSP点播)</h5>
-                        <button class="btn btn-light btn-sm" onclick="refreshTab('channels_rtsp')">刷新</button>
-                    </div>
-                    <div class="card-body">
-                        <!-- RTSP 鉴权状态 -->
-                        <div id="rtsp-status-bar" class="alert alert-secondary mb-3">
-                            <small>正在检查 RTSP 鉴权状态...</small>
-                        </div>
-                        <pre class="mb-0">{{ channels_rtsp }}</pre>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 系统日志 -->
-            <div class="tab-pane fade" id="logs" role="tabpanel">
-                <div class="card">
-                    <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">系统日志</h5>
-                        <button class="btn btn-light btn-sm" onclick="refreshTab('logs')">刷新</button>
-                    </div>
-                    <div class="card-body">
-                        <pre class="mb-0">{{ logs }}</pre>
-                    </div>
-                </div>
-            </div>
-
-            <!-- EPG 节目指南 -->
-            <div class="tab-pane fade" id="epg" role="tabpanel">
-                <div class="card">
-                    <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">节目指南 (EPG)</h5>
-                        <div>
-                            <button class="btn btn-light btn-sm" onclick="loadEpg()">刷新</button>
-                        </div>
-                    </div>
-                    <div class="card-body">
-                        <div id="epg-loading" class="text-center py-4">
-                            <div class="spinner-border text-info" role="status">
-                                <span class="visually-hidden">加载中...</span>
-                            </div>
-                            <p class="mt-2 text-muted">正在加载节目数据...</p>
-                        </div>
-                        <div id="epg-content" style="display:none;">
-                            <div class="row mb-3">
-                                <div class="col-md-4">
-                                    <select id="epg-channel-filter" class="form-select" onchange="filterEpg()">
-                                        <option value="">所有频道</option>
-                                    </select>
-                                </div>
-                                <div class="col-md-8 text-end">
-                                    <span class="badge bg-info" id="epg-count-badge"></span>
-                                    <button class="btn btn-sm btn-outline-info ms-2" onclick="copyEpgUrl()">XMLTV 订阅</button>
-                                    <button class="btn btn-sm btn-outline-secondary ms-1" onclick="refreshEpg()">强制刷新</button>
-                                </div>
-                            </div>
-                            <div style="max-height: 600px; overflow-y: auto;">
-                                <table class="table table-striped table-hover table-sm" id="epg-table">
-                                    <thead class="table-info sticky-top">
-                                        <tr>
-                                            <th style="width:15%">频道</th>
-                                            <th style="width:12%">开始时间</th>
-                                            <th style="width:12%">结束时间</th>
-                                            <th>节目名称</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="epg-tbody"></tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+        </div>
+        <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary btn-sm" onclick="syncChannels()">
+                <i class="bi-arrow-repeat"></i> 同步频道
+            </button>
+            <button class="btn btn-outline-info btn-sm" onclick="refreshEpg()">
+                <i class="bi-cloud-download"></i> 刷新EPG
+            </button>
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-    function copyText(elementId) {
-        var copyText = document.getElementById(elementId);
-        copyText.select();
-        copyText.setSelectionRange(0, 99999);
-        document.execCommand("copy");
-        showToast('订阅地址已复制到剪贴板', 'success');
-    }
+    <div class="content">
 
-    // 复制 EPG XMLTV 订阅地址到剪贴板
-    function copyEpgUrl() {
-        var url = window.location.protocol + '//' + window.location.host + '/epg.xml';
-        navigator.clipboard.writeText(url).then(function() {
-            showToast('EPG XMLTV 订阅地址已复制到剪贴板', 'success');
-        }).catch(function() {
-            // fallback for older browsers
-            var textarea = document.createElement('textarea');
-            textarea.value = url;
-            document.body.appendChild(textarea);
-            textarea.select();
-            document.execCommand('copy');
-            document.body.removeChild(textarea);
-            showToast('EPG XMLTV 订阅地址已复制到剪贴板', 'success');
-        });
-    }
+        <!-- ====== Dashboard ====== -->
+        <div class="page active" id="page-dashboard">
+            <div class="row g-3 mb-4">
+                <div class="col-md-3 col-6">
+                    <div class="stat-card">
+                        <div class="icon icon-blue"><i class="bi-tv"></i></div>
+                        <div class="value" id="stat-channels">-</div>
+                        <div class="label">UDPXY 频道</div>
+                    </div>
+                </div>
+                <div class="col-md-3 col-6">
+                    <div class="stat-card">
+                        <div class="icon icon-green"><i class="bi-play-btn"></i></div>
+                        <div class="value" id="stat-rtsp">-</div>
+                        <div class="label">RTSP 频道</div>
+                    </div>
+                </div>
+                <div class="col-md-3 col-6">
+                    <div class="stat-card">
+                        <div class="icon icon-orange"><i class="bi-calendar-event"></i></div>
+                        <div class="value" id="stat-epg">-</div>
+                        <div class="label">EPG 节目数</div>
+                    </div>
+                </div>
+                <div class="col-md-3 col-6">
+                    <div class="stat-card">
+                        <div class="icon icon-red" id="rtsp-status-icon"><i class="bi-shield-check"></i></div>
+                        <div class="value" id="stat-rtsp-status" style="font-size:16px">检查中...</div>
+                        <div class="label">RTSP 鉴权状态</div>
+                    </div>
+                </div>
+            </div>
 
-    // 后台刷新频道列表
-    async function syncChannels() {
-        var btn = document.getElementById('syncBtn');
-        var status = document.getElementById('syncStatus');
-        btn.disabled = true;
-        status.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> 正在同步...';
-        status.className = 'ms-2 text-secondary';
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <div class="section-card">
+                        <div class="card-header">订阅地址 <span class="badge bg-secondary rounded-pill" style="font-size:11px">复制到播放器使用</span></div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label class="form-label" style="font-size:13px;font-weight:600">UDPXY 订阅</label>
+                                <div class="input-group">
+                                    <input type="text" class="form-control" id="subUrl" value="{{ request.host_url }}sub" readonly>
+                                    <button class="btn btn-outline-secondary" onclick="copyText('subUrl')"><i class="bi-clipboard"></i></button>
+                                </div>
+                            </div>
+                            <div class="mb-0">
+                                <label class="form-label" style="font-size:13px;font-weight:600">RTSP 点播订阅（含回看）</label>
+                                <div class="input-group">
+                                    <input type="text" class="form-control" id="subRtspUrl" value="{{ request.host_url }}sub_rtsp" readonly>
+                                    <button class="btn btn-outline-secondary" onclick="copyText('subRtspUrl')"><i class="bi-clipboard"></i></button>
+                                </div>
+                            </div>
+                            <hr class="my-3">
+                            <div>
+                                <label class="form-label" style="font-size:13px;font-weight:600">EPG XMLTV 订阅</label>
+                                <div class="input-group">
+                                    <input type="text" class="form-control" id="epgUrl" value="{{ request.host_url }}epg.xml" readonly>
+                                    <button class="btn btn-outline-info" onclick="copyText('epgUrl')"><i class="bi-clipboard"></i></button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="section-card">
+                        <div class="card-header">RTSP 鉴权状态</div>
+                        <div class="card-body" id="rtsp-status-detail">
+                            <div class="text-center py-3">
+                                <div class="spinner-border spinner-border-sm text-secondary" role="status"></div>
+                                <span class="ms-2 text-muted" style="font-size:14px">正在检查...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-        try {
-            var response = await fetch('/api/sync_channels');
-            var result = await response.json();
-            if (result.success) {
-                status.innerHTML = '✅ ' + result.message;
-                status.className = 'ms-2 text-success';
-                showToast('频道同步成功：' + result.message, 'success');
-            } else {
-                status.innerHTML = '❌ ' + result.message;
-                status.className = 'ms-2 text-danger';
-                showToast('同步失败：' + result.message, 'danger');
-            }
-        } catch (error) {
-            status.innerHTML = '❌ 请求失败: ' + error.message;
-            status.className = 'ms-2 text-danger';
-            showToast('请求失败：' + error.message, 'danger');
-        } finally {
-            btn.disabled = false;
+        <!-- ====== Channels ====== -->
+        <div class="page" id="page-channels">
+            <div class="section-card">
+                <div class="card-header">
+                    <span>UDPXY 频道列表</span>
+                    <div class="d-flex gap-2">
+                        <input type="text" class="form-control form-control-sm" style="width:200px" placeholder="搜索频道..." id="ch-search" oninput="filterChannelList()">
+                        <button class="btn btn-sm btn-outline-secondary" onclick="loadChannelList()"><i class="bi-arrow-clockwise"></i></button>
+                    </div>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-wrap" id="ch-udpxy-wrap">
+                        <div class="text-center py-4 text-muted" style="font-size:14px">加载中...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="section-card">
+                <div class="card-header">
+                    <span>RTSP 点播频道列表</span>
+                    <div class="d-flex gap-2">
+                        <input type="text" class="form-control form-control-sm" style="width:200px" placeholder="搜索频道..." id="ch-rtsp-search" oninput="filterRtspList()">
+                        <button class="btn btn-sm btn-outline-secondary" onclick="loadRtspList()"><i class="bi-arrow-clockwise"></i></button>
+                    </div>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-wrap" id="ch-rtsp-wrap">
+                        <div class="text-center py-4 text-muted" style="font-size:14px">加载中...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ====== EPG ====== -->
+        <div class="page" id="page-epg">
+            <div class="section-card">
+                <div class="card-header">
+                    <div class="d-flex align-items-center gap-3 flex-wrap">
+                        <div>
+                            <label style="font-size:12px;color:#6b7280;margin-bottom:2px">日期</label>
+                            <select class="form-select form-select-sm" id="epg-date" style="width:150px" onchange="loadEpgPrograms()"></select>
+                        </div>
+                        <div>
+                            <label style="font-size:12px;color:#6b7280;margin-bottom:2px">频道</label>
+                            <select class="form-select form-select-sm" id="epg-channel" style="width:180px" onchange="loadEpgPrograms()">
+                                <option value="">所有频道</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div>
+                        <button class="btn btn-sm btn-outline-info" onclick="copyEpgUrl()"><i class="bi-link-45deg"></i> XMLTV订阅</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="refreshEpg()"><i class="bi-arrow-repeat"></i> 刷新</button>
+                    </div>
+                </div>
+                <div class="card-body p-0">
+                    <div id="epg-loading" class="text-center py-5" style="display:none">
+                        <div class="spinner-border text-info" role="status"></div>
+                        <p class="mt-2 text-muted">加载中...</p>
+                    </div>
+                    <div id="epg-empty" class="text-center py-5 text-muted" style="display:none">
+                        <i class="bi-inbox" style="font-size:40px;display:block;margin-bottom:8px"></i>
+                        该日期无节目数据
+                    </div>
+                    <div id="epg-table-area">
+                        <div class="table-wrap" id="epg-table-wrap">
+                            <table class="table table-hover table-sm mb-0" id="epg-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width:16%">频道</th>
+                                        <th style="width:13%">开始</th>
+                                        <th style="width:13%">结束</th>
+                                        <th>节目名称</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="epg-tbody"></tbody>
+                            </table>
+                        </div>
+                        <div class="d-flex justify-content-between align-items-center p-3 border-top">
+                            <span class="pagination-info" id="epg-pagination-info"></span>
+                            <div class="d-flex gap-1" id="epg-pagination-btns"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ====== Config ====== -->
+        <div class="page" id="page-config">
+            <div class="section-card">
+                <div class="card-header">系统配置</div>
+                <div class="card-body">
+                    <form method="post" action="/save_config" id="config-form">
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label class="form-label">UDPXY 地址</label>
+                                <input type="text" class="form-control" name="udpxy" value="{{ config.UDPXY }}" placeholder="如: http://10.10.10.1:7088/udp/">
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">BASE_URL</label>
+                                <input type="text" class="form-control" name="base_url" value="{{ config.BASE_URL }}">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">USER_ID <span class="text-danger">*</span></label>
+                                <input type="text" class="form-control" name="user_id" value="{{ config.USER_ID }}" required>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">STBID <span class="text-danger">*</span></label>
+                                <input type="text" class="form-control" name="stbid" value="{{ config.STBID }}" required>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">Authenticator <span class="text-danger">*</span></label>
+                                <input type="text" class="form-control" name="authenticator" value="{{ config.Authenticator }}" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">USER_AGENT</label>
+                                <input type="text" class="form-control" name="user_agent" value="{{ config.USER_AGENT }}">
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">EPG 服务器地址</label>
+                                <input type="text" class="form-control" name="epg_host" value="{{ config.get('EPG_HOST', '') }}">
+                            </div>
+                        </div>
+                        <hr>
+                        <div class="d-flex gap-2">
+                            <button type="submit" class="btn btn-primary" id="config-save-btn">
+                                <i class="bi-check-lg"></i> 保存配置
+                            </button>
+                            <button type="button" class="btn btn-secondary" onclick="syncChannels()">
+                                <i class="bi-arrow-repeat"></i> 同步频道
+                            </button>
+                            <span id="syncStatus" class="align-self-center ms-2" style="font-size:14px"></span>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- ====== Logs ====== -->
+        <div class="page" id="page-logs">
+            <div class="section-card">
+                <div class="card-header">
+                    <span>系统日志</span>
+                    <div class="d-flex gap-2">
+                        <input type="text" class="form-control form-control-sm" style="width:200px" placeholder="搜索日志..." id="log-search" oninput="filterLogs()">
+                        <button class="btn btn-sm btn-outline-secondary" onclick="loadLogs()"><i class="bi-arrow-clockwise"></i></button>
+                    </div>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-wrap" id="log-wrap" style="max-height:600px">
+                        <div class="text-center py-4 text-muted" style="font-size:14px">加载中...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// ========== Navigation ==========
+function switchPage(page) {
+    document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+    document.querySelector(`.nav-item[data-page="${page}"]`).classList.add('active');
+    document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
+    document.getElementById(`page-${page}`).classList.add('active');
+
+    const titles = {
+        dashboard: ['仪表盘', '系统概览与状态'],
+        channels: ['频道列表', 'UDPXY / RTSP 频道管理'],
+        epg: ['EPG 节目单', '8天节目指南（含回看）'],
+        config: ['系统配置', '服务器与认证设置'],
+        logs: ['系统日志', '运行与调试日志']
+    };
+    document.getElementById('page-title').textContent = titles[page][0];
+    document.getElementById('page-subtitle').textContent = titles[page][1];
+
+    // Close sidebar on mobile
+    document.getElementById('sidebar').classList.remove('open');
+
+    // Load page content
+    if (page === 'channels') loadChannelList();
+    if (page === 'epg') loadEpgData();
+    if (page === 'logs') loadLogs();
+}
+
+// ========== Toast ==========
+function showToast(msg, type) {
+    var c = document.getElementById('toast-container');
+    var el = document.createElement('div');
+    el.className = 'toast-msg ' + type;
+    el.textContent = msg;
+    c.appendChild(el);
+    setTimeout(() => { el.remove(); }, 4000);
+}
+
+function copyText(id) {
+    var el = document.getElementById(id);
+    el.select(); el.setSelectionRange(0, 99999);
+    document.execCommand('copy');
+    showToast('已复制到剪贴板', 'success');
+}
+
+function copyEpgUrl() {
+    var url = window.location.protocol + '//' + window.location.host + '/epg.xml';
+    navigator.clipboard.writeText(url).then(() => showToast('EPG 订阅地址已复制', 'success'))
+        .catch(() => { copyText('epgUrl'); });
+}
+
+// ========== Dashboard ==========
+async function loadDashboard() {
+    try {
+        var [chData, epgData, rtspData] = await Promise.all([
+            fetch('/refresh_channels').then(r => r.text()),
+            fetch('/api/epg').then(r => r.json()),
+            fetch('/rtsp_status').then(r => r.json())
+        ]);
+        var chCount = chData.split('\n').filter(l => l.trim()).length;
+        document.getElementById('stat-channels').textContent = chCount;
+        document.getElementById('nav-channel-count').textContent = chCount;
+        document.getElementById('stat-rtsp').textContent = rtspData.rtsp_channel_count || '-';
+        document.getElementById('stat-epg').textContent = (epgData.total || 0).toLocaleString();
+        document.getElementById('nav-epg-count').textContent = (epgData.total || 0).toLocaleString();
+
+        // RTSP status
+        var statusEl = document.getElementById('stat-rtsp-status');
+        var iconEl = document.getElementById('rtsp-status-icon');
+        var statusDetail = document.getElementById('rtsp-status-detail');
+        var dot, msg;
+        if (rtspData.status === 'valid') {
+            dot = 'green'; msg = '✅ 鉴权有效'; iconEl.className = 'icon icon-green'; iconEl.innerHTML = '<i class="bi-shield-check"></i>';
+        } else if (rtspData.status === 'warning' || rtspData.status === 'expiring') {
+            dot = 'yellow'; msg = '⚠️ 即将过期'; iconEl.className = 'icon icon-orange'; iconEl.innerHTML = '<i class="bi-shield-exclamation"></i>';
+        } else {
+            dot = 'red'; msg = '❌ 已过期'; iconEl.className = 'icon icon-red'; iconEl.innerHTML = '<i class="bi-shield-x"></i>';
         }
+        statusEl.innerHTML = '<span class="status-dot ' + dot + '"></span>' + msg;
+        statusDetail.innerHTML = '<div style="font-size:14px">' +
+            '<div class="mb-2"><span class="status-dot ' + dot + '"></span>' + rtspData.message + '</div>' +
+            '<div class="text-muted" style="font-size:13px">最后同步: ' + (rtspData.last_sync_time || '未知') + '</div>' +
+            (rtspData.session_hint ? '<div class="text-muted" style="font-size:13px">' + rtspData.session_hint + '</div>' : '') +
+            '</div>';
+    } catch(e) { /* ignore */ }
+}
+
+// ========== Channels ==========
+var _udpxyLines = [], _rtspLines = [];
+
+async function loadChannelList() {
+    var wrap = document.getElementById('ch-udpxy-wrap');
+    wrap.innerHTML = '<div class="text-center py-4"><div class="spinner-border spinner-border-sm text-secondary"></div></div>';
+    try {
+        var data = await fetch('/refresh_channels').then(r => r.text());
+        _udpxyLines = data.split('\n').filter(l => l.trim());
+        renderChannelTable(wrap, _udpxyLines, 'ch-search');
+    } catch(e) { wrap.innerHTML = '<div class="p-3 text-danger">加载失败</div>'; }
+    loadRtspList();
+}
+
+async function loadRtspList() {
+    var wrap = document.getElementById('ch-rtsp-wrap');
+    wrap.innerHTML = '<div class="text-center py-4"><div class="spinner-border spinner-border-sm text-secondary"></div></div>';
+    try {
+        var data = await fetch('/refresh_channels_rtsp').then(r => r.text());
+        _rtspLines = data.split('\n').filter(l => l.trim());
+        renderChannelTable(wrap, _rtspLines, 'ch-rtsp-search');
+    } catch(e) { wrap.innerHTML = '<div class="p-3 text-danger">加载失败</div>'; }
+}
+
+function renderChannelTable(wrap, lines, searchId) {
+    var q = (document.getElementById(searchId)?.value || '').toLowerCase();
+    var filtered = q ? lines.filter(l => l.toLowerCase().includes(q)) : lines;
+    if (filtered.length === 0) {
+        wrap.innerHTML = '<div class="text-center py-4 text-muted">无匹配频道</div>';
+        return;
     }
-
-    // 强制刷新 EPG（后台执行）
-    async function refreshEpg() {
-        showToast('正在后台刷新 EPG 数据...', 'info');
-        try {
-            var response = await fetch('/refresh_epg');
-            var result = await response.json();
-            if (result.success) {
-                showToast('EPG 刷新完成：' + result.message, 'success');
-                // 刷新 EPG 页面数据
-                loadEpg();
-            } else {
-                showToast('EPG 刷新失败：' + result.message, 'danger');
-            }
-        } catch (error) {
-            showToast('EPG 刷新请求失败：' + error.message, 'danger');
-        }
-    }
-
-    // 显示 Toast 通知
-    function showToast(message, type) {
-        var alert = document.createElement('div');
-        var bgClass = type === 'success' ? 'alert-success' : type === 'danger' ? 'alert-danger' : 'alert-info';
-        alert.className = 'alert ' + bgClass + ' alert-dismissible fade show position-fixed bottom-0 end-0 m-3';
-        alert.style.zIndex = '9999';
-        alert.innerHTML = message + '<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>';
-        document.body.appendChild(alert);
-        setTimeout(function() { alert.remove(); }, 5000);
-    }
-
-    async function refreshTab(tab) {
-        // 映射标签页ID到对应的API端点
-        const apiMap = {
-            'channels': '/refresh_channels',
-            'channels_rtsp': '/refresh_channels_rtsp',
-            'logs': '/refresh_logs'
-        };
-
-        const contentElement = document.querySelector(`#${tab} pre`);
-        if (!contentElement) return;
-
-        const loadingHtml = '<div class="text-center">加载中...</div>';
-        contentElement.innerHTML = loadingHtml;
-
-        try {
-            const response = await fetch(apiMap[tab], {
-                headers: {
-                    'X-Requested-With': 'XMLHttpRequest'
-                }
-            });
-            if (!response.ok) throw new Error('网络请求失败');
-            const data = await response.text();
-            contentElement.innerHTML = data;
-
-            // 显示成功提示
-            const alert = document.createElement('div');
-            alert.className = 'alert alert-success alert-dismissible fade show position-fixed bottom-0 end-0 m-3';
-            alert.innerHTML = `
-                刷新成功
-                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-            `;
-            document.body.appendChild(alert);
-            setTimeout(() => alert.remove(), 3000);
-
-            // 如果刷新的是 RTSP 标签页，同时更新状态
-            if (tab === 'channels_rtsp') {
-                checkRtspStatus();
-            }
-        } catch (error) {
-            contentElement.innerHTML = `刷新失败: ${error.message}`;
-            
-            // 显示错误提示
-            const alert = document.createElement('div');
-            alert.className = 'alert alert-danger alert-dismissible fade show position-fixed bottom-0 end-0 m-3';
-            alert.innerHTML = `
-                刷新失败：${error.message}
-                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-            `;
-            document.body.appendChild(alert);
-            setTimeout(() => alert.remove(), 3000);
-        }
-    }
-
-    // 检查 RTSP 鉴权状态
-    async function checkRtspStatus() {
-        const statusBar = document.getElementById('rtsp-status-bar');
-        if (!statusBar) return;
-
-        try {
-            const response = await fetch('/rtsp_status');
-            if (!response.ok) throw new Error('获取状态失败');
-            const data = await response.json();
-
-            let alertClass = 'alert-secondary';
-            let icon = '⏳';
-
-            switch (data.status) {
-                case 'valid':
-                    alertClass = 'alert-success';
-                    icon = '✅';
-                    break;
-                case 'warning':
-                    alertClass = 'alert-warning';
-                    icon = '⚠️';
-                    break;
-                case 'expiring':
-                    alertClass = 'alert-warning';
-                    icon = '⚠️';
-                    break;
-                case 'expired':
-                    alertClass = 'alert-danger';
-                    icon = '❌';
-                    break;
-                default:
-                    alertClass = 'alert-secondary';
-                    icon = '❓';
-            }
-
-            statusBar.className = `alert ${alertClass} mb-3`;
-            statusBar.innerHTML = `
-                <strong>${icon} RTSP 鉴权状态</strong><br>
-                <small>
-                    ${data.message}<br>
-                    最后同步: ${data.last_sync_time || '未知'} &nbsp;|&nbsp;
-                    同步周期: ${data.sync_schedule}<br>
-                    UDPXY频道: ${data.udpxy_channel_count} 个 &nbsp;|&nbsp;
-                    RTSP频道: ${data.rtsp_channel_count} 个
-                    ${data.session_hint ? '<br>' + data.session_hint : ''}
-                </small>
-            `;
-        } catch (error) {
-            if (statusBar) {
-                statusBar.className = 'alert alert-secondary mb-3';
-                statusBar.innerHTML = `<small>无法获取状态: ${error.message}</small>`;
-            }
-        }
-    }
-
-    // ========== EPG 功能 ==========
-    let epgData = [];
-
-    async function loadEpg() {
-        const loading = document.getElementById('epg-loading');
-        const content = document.getElementById('epg-content');
-        const tbody = document.getElementById('epg-tbody');
-
-        loading.style.display = 'block';
-        content.style.display = 'none';
-
-        try {
-            const response = await fetch('/api/epg');
-            if (!response.ok) throw new Error('获取 EPG 数据失败');
-            const result = await response.json();
-            epgData = result.programs || [];
-
-            // 填充频道筛选下拉框
-            const channelSelect = document.getElementById('epg-channel-filter');
-            const channels = [...new Set(epgData.map(p => p.channel_name))].sort();
-            channelSelect.innerHTML = '<option value="">所有频道 (' + channels.length + ' 个)</option>';
-            channels.forEach(ch => {
-                channelSelect.innerHTML += '<option value="' + ch.replace(/"/g, '&quot;') + '">' + ch + '</option>';
-            });
-
-            renderEpg();
-            loading.style.display = 'none';
-            content.style.display = 'block';
-        } catch (error) {
-            loading.innerHTML = '<div class="alert alert-danger">加载失败: ' + error.message + '</div>';
-        }
-    }
-
-    function renderEpg() {
-        const tbody = document.getElementById('epg-tbody');
-        const filter = document.getElementById('epg-channel-filter').value;
-        const countBadge = document.getElementById('epg-count-badge');
-
-        let filtered = epgData;
-        if (filter) {
-            filtered = epgData.filter(p => p.channel_name === filter);
-        }
-
-        // 按频道名 + 开始时间排序
-        filtered.sort((a, b) => {
-            if (a.channel_name !== b.channel_name) return a.channel_name.localeCompare(b.channel_name);
-            return a.start.localeCompare(b.start);
-        });
-
-        countBadge.textContent = '共 ' + filtered.length + ' 个节目';
-
-        let html = '';
-        filtered.forEach(p => {
-            const startStr = p.start.substring(0, 4) + '-' + p.start.substring(4, 6) + '-' + p.start.substring(6, 8) + ' ' +
-                            p.start.substring(8, 10) + ':' + p.start.substring(10, 12) + ':' + p.start.substring(12, 14);
-            const endStr = p.stop.substring(0, 4) + '-' + p.stop.substring(4, 6) + '-' + p.stop.substring(6, 8) + ' ' +
-                          p.stop.substring(8, 10) + ':' + p.stop.substring(10, 12) + ':' + p.stop.substring(12, 14);
-            html += '<tr>' +
-                '<td>' + p.channel_name + '</td>' +
-                '<td>' + startStr + '</td>' +
-                '<td>' + endStr + '</td>' +
-                '<td>' + p.title + '</td>' +
-                '</tr>';
-        });
-        tbody.innerHTML = html;
-    }
-
-    function filterEpg() {
-        renderEpg();
-    }
-
-    document.addEventListener('DOMContentLoaded', function() {
-        const activeTab = localStorage.getItem('activeTab');
-        if (activeTab) {
-            const tab = new bootstrap.Tab(document.querySelector(`#${activeTab}-tab`));
-            tab.show();
-            localStorage.removeItem('activeTab');
-        }
-
-        // 页面加载后检查 RTSP 状态
-        setTimeout(checkRtspStatus, 500);
-
-        // 监听 RTSP 标签页切换事件
-        const rtspTab = document.getElementById('channels-rtsp-tab');
-        if (rtspTab) {
-            rtspTab.addEventListener('shown.bs.tab', function () {
-                checkRtspStatus();
-            });
-        }
-
-        // 监听 EPG 标签页切换事件
-        const epgTab = document.getElementById('epg-tab');
-        if (epgTab) {
-            epgTab.addEventListener('shown.bs.tab', function () {
-                loadEpg();
-            });
-        }
+    var html = '<table class="table table-hover table-sm mb-0"><thead><tr><th>频道名称</th><th>地址</th></tr></thead><tbody>';
+    filtered.forEach(function(l) {
+        var parts = l.split(',', 2);
+        html += '<tr><td style="font-weight:500">' + parts[0] + '</td><td style="font-size:12px;color:#6b7280;word-break:break-all;max-width:400px">' + (parts[1] || '') + '</td></tr>';
     });
-    </script>
+    html += '</tbody></table><div class="p-2 text-muted border-top" style="font-size:12px">共 ' + filtered.length + ' 个频道</div>';
+    wrap.innerHTML = html;
+}
+
+function filterChannelList() { renderChannelTable(document.getElementById('ch-udpxy-wrap'), _udpxyLines, 'ch-search'); }
+function filterRtspList() { renderChannelTable(document.getElementById('ch-rtsp-wrap'), _rtspLines, 'ch-rtsp-search'); }
+
+// ========== EPG ==========
+var epgPageSize = 50;
+
+async function loadEpgData() {
+    try {
+        var [datesRes, channelsRes] = await Promise.all([
+            fetch('/api/epg/dates').then(r => r.json()),
+            fetch('/api/epg/channels').then(r => r.json())
+        ]);
+        // Populate date selector
+        var sel = document.getElementById('epg-date');
+        sel.innerHTML = '';
+        datesRes.dates.forEach(function(d) {
+            var opt = document.createElement('option');
+            opt.value = d;
+            opt.textContent = d.slice(0,4) + '-' + d.slice(4,6) + '-' + d.slice(6,8);
+            sel.appendChild(opt);
+        });
+        // Populate channel selector
+        var chSel = document.getElementById('epg-channel');
+        chSel.innerHTML = '<option value="">所有频道 (' + channelsRes.total + ' 个)</option>';
+        channelsRes.channels.forEach(function(ch) {
+            var opt = document.createElement('option');
+            opt.value = ch.name;
+            opt.textContent = ch.name + ' (' + ch.count + ')';
+            chSel.appendChild(opt);
+        });
+        // Select today or last date
+        var today = new Date();
+        var todayStr = today.getFullYear() + ('0'+(today.getMonth()+1)).slice(-2) + ('0'+today.getDate()).slice(-2);
+        if (datesRes.dates.includes(todayStr)) sel.value = todayStr;
+        loadEpgPrograms();
+    } catch(e) { showToast('EPG 加载失败', 'error'); }
+}
+
+async function loadEpgPrograms() {
+    var date = document.getElementById('epg-date').value;
+    var channel = document.getElementById('epg-channel').value;
+    var loading = document.getElementById('epg-loading');
+    var empty = document.getElementById('epg-empty');
+    var area = document.getElementById('epg-table-area');
+    var tbody = document.getElementById('epg-tbody');
+
+    if (!date) { empty.style.display = 'block'; area.style.display = 'none'; loading.style.display = 'none'; return; }
+
+    loading.style.display = 'block'; empty.style.display = 'none'; area.style.display = 'none';
+    tbody.innerHTML = '';
+
+    try {
+        var params = new URLSearchParams({date: date, offset: 0, limit: epgPageSize});
+        if (channel) params.set('channel_name', channel);
+        var res = await fetch('/api/epg/programs?' + params.toString()).then(r => r.json());
+
+        if (res.total === 0) {
+            loading.style.display = 'none'; empty.style.display = 'block'; area.style.display = 'none';
+            return;
+        }
+
+        loading.style.display = 'none'; area.style.display = 'block';
+        renderEpgPage(res);
+    } catch(e) {
+        loading.innerHTML = '<div class="text-danger py-4">加载失败</div>';
+    }
+}
+
+var _epgCurrentResult = null;
+
+function renderEpgPage(result) {
+    _epgCurrentResult = result;
+    var tbody = document.getElementById('epg-tbody');
+    var html = '';
+    result.programs.forEach(function(p) {
+        var s = p.start, e = p.stop;
+        var st = s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6,8)+' '+s.slice(8,10)+':'+s.slice(10,12);
+        var et = e.slice(0,4)+'-'+e.slice(4,6)+'-'+e.slice(6,8)+' '+e.slice(8,10)+':'+e.slice(10,12);
+        html += '<tr>' +
+            '<td style="font-weight:500">' + p.channel_name + '</td>' +
+            '<td class="epg-time">' + st + '</td>' +
+            '<td class="epg-time">' + et + '</td>' +
+            '<td class="epg-title">' + p.title + '</td>' +
+            '</tr>';
+    });
+    tbody.innerHTML = html;
+
+    // Pagination
+    var total = result.total, offset = result.offset, limit = result.limit;
+    var totalPages = Math.ceil(total / limit);
+    var curPage = Math.floor(offset / limit) + 1;
+    document.getElementById('epg-pagination-info').textContent = '共 ' + total + ' 个节目，第 ' + curPage + '/' + totalPages + ' 页';
+
+    var btns = document.getElementById('epg-pagination-btns');
+    btns.innerHTML = '';
+    var prevBtn = document.createElement('button');
+    prevBtn.className = 'page-btn'; prevBtn.innerHTML = '<i class="bi-chevron-left"></i>';
+    prevBtn.disabled = offset <= 0;
+    prevBtn.onclick = function() { loadEpgPage(Math.max(0, offset - limit)); };
+    btns.appendChild(prevBtn);
+
+    // Page numbers
+    var startPage = Math.max(1, curPage - 2);
+    var endPage = Math.min(totalPages, curPage + 2);
+    for (var i = startPage; i <= endPage; i++) {
+        var btn = document.createElement('button');
+        btn.className = 'page-btn' + (i === curPage ? ' active' : '');
+        btn.textContent = i;
+        btn.onclick = function(p) { return function() { loadEpgPage((p-1) * limit); }; }(i);
+        btns.appendChild(btn);
+    }
+
+    var nextBtn = document.createElement('button');
+    nextBtn.className = 'page-btn'; nextBtn.innerHTML = '<i class="bi-chevron-right"></i>';
+    nextBtn.disabled = offset + limit >= total;
+    nextBtn.onclick = function() { loadEpgPage(offset + limit); };
+    btns.appendChild(nextBtn);
+}
+
+async function loadEpgPage(offset) {
+    var date = document.getElementById('epg-date').value;
+    var channel = document.getElementById('epg-channel').value;
+    var params = new URLSearchParams({date: date, offset: offset, limit: epgPageSize});
+    if (channel) params.set('channel_name', channel);
+    try {
+        var res = await fetch('/api/epg/programs?' + params.toString()).then(r => r.json());
+        renderEpgPage(res);
+    } catch(e) { showToast('加载失败', 'error'); }
+}
+
+// ========== Logs ==========
+var _allLogs = '';
+
+async function loadLogs() {
+    var wrap = document.getElementById('log-wrap');
+    wrap.innerHTML = '<div class="text-center py-4"><div class="spinner-border spinner-border-sm text-secondary"></div></div>';
+    try {
+        _allLogs = await fetch('/refresh_logs').then(r => r.text());
+        filterLogs();
+    } catch(e) { wrap.innerHTML = '<div class="p-3 text-danger">加载失败</div>'; }
+}
+
+function filterLogs() {
+    var wrap = document.getElementById('log-wrap');
+    var q = (document.getElementById('log-search').value || '').toLowerCase();
+    if (!_allLogs) return;
+    var lines = _allLogs.split('\n');
+    var filtered = q ? lines.filter(l => l.toLowerCase().includes(q)) : lines;
+    wrap.innerHTML = '<pre style="margin:0;padding:12px 16px;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-all">' +
+        filtered.join('\n') + '</pre>' +
+        '<div class="p-2 text-muted border-top" style="font-size:12px">' + filtered.length + ' 行</div>';
+}
+
+// ========== Sync & Refresh ==========
+async function syncChannels() {
+    var btn = document.querySelector('.btn-outline-secondary .bi-arrow-repeat');
+    if (btn) btn.style.animation = 'none';
+    showToast('正在同步频道列表...', 'info');
+    try {
+        var res = await fetch('/api/sync_channels').then(r => r.json());
+        if (res.success) {
+            showToast('同步成功：' + res.message, 'success');
+            loadDashboard();
+        } else {
+            showToast('同步失败：' + res.message, 'error');
+        }
+    } catch(e) { showToast('同步请求失败', 'error'); }
+    var status = document.getElementById('syncStatus');
+    if (status) status.textContent = '';
+}
+
+async function refreshEpg() {
+    showToast('正在后台刷新 EPG 数据...', 'info');
+    try {
+        var res = await fetch('/refresh_epg').then(r => r.json());
+        if (res.success) {
+            showToast('EPG 刷新完成：' + res.message, 'success');
+            loadDashboard();
+            if (document.getElementById('page-epg').classList.contains('active')) loadEpgData();
+        } else {
+            showToast('EPG 刷新失败：' + res.message, 'error');
+        }
+    } catch(e) { showToast('EPG 刷新请求失败', 'error'); }
+}
+
+// ========== Init ==========
+document.addEventListener('DOMContentLoaded', function() {
+    loadDashboard();
+    // Handle config form submit via AJAX to avoid redirect
+    document.getElementById('config-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        var btn = document.getElementById('config-save-btn');
+        btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 保存中...';
+        try {
+            var formData = new FormData(this);
+            var res = await fetch('/save_config', { method: 'POST', body: formData });
+            var text = await res.text();
+            // Check if redirected back to index with flash message
+            if (text.includes('alert')) {
+                showToast('配置已保存', 'success');
+                loadDashboard();
+            } else {
+                showToast('配置保存成功', 'success');
+            }
+        } catch(e) { showToast('保存失败: ' + e.message, 'error'); }
+        btn.disabled = false; btn.innerHTML = '<i class="bi-check-lg"></i> 保存配置';
+    });
+});
+</script>
 </body>
-</html> 
+</html>
