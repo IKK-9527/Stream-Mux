@@ -1,9 +1,10 @@
 from flask import Flask, send_from_directory, request, render_template, jsonify, flash, redirect, url_for, Response
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from main import get_channels, index, save_config, get_sync_info  # 从 main.py 导入所需函数
+from main import get_channels, index, save_config, get_sync_info, get_epg  # 从 main.py 导入所需函数
 import requests
 import json
+import re
 from datetime import datetime
 
 app = Flask(__name__)
@@ -23,6 +24,20 @@ def refresh_channels_content():
         return data
     except Exception as e:
         return f"获取UDPXY频道列表失败：{str(e)}"
+
+# 后台同步频道列表（AJAX 调用）
+@app.route('/api/sync_channels')
+def api_sync_channels():
+    try:
+        result = get_channels()  # 执行频道同步
+        sync_info = get_sync_info()
+        channel_count = sync_info.get('channel_count_udpxy', 0) if sync_info else 0
+        return jsonify({
+            'success': True,
+            'message': f'获取到 {channel_count} 个频道'
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/refresh_channels_rtsp')
 def refresh_channels_rtsp_content():
@@ -56,7 +71,7 @@ def generate_sub(channel_file):
     try:
         with open(channel_file, 'r', encoding='utf-8') as f:
             channels = f.readlines()
-        
+
         if not channels:
             return "暂无频道数据", 404
 
@@ -69,16 +84,23 @@ def generate_sub(channel_file):
             if line.strip():  # 跳过空行
                 parts = line.strip().split(',', 2)
                 name = parts[0]
+                # 从 URL 中提取 programid 作为 tvg-id（用于 EPG 精确匹配）
+                first_url = parts[1] if len(parts) > 1 else ''
+                tvg_id = ''
+                id_match = re.search(r'[?&](?:programid|channelId)=([^&]+)', first_url)
+                if id_match:
+                    tvg_id = id_match.group(1)
+
                 if is_rtsp and len(parts) == 3:
                     # 三字段：频道名,带变量的URL（catchup-source）,原始URL（实际播放）
                     catchup_url = parts[1]
                     play_url = parts[2]
-                    sub_content += f'#EXTINF:-1 tvg-id="" tvg-name="{name}" tvg-logo="" group-title="" catchup="default" catchup-source="{catchup_url}",{name}\n'
+                    sub_content += f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}" tvg-logo="" group-title="" catchup="default" catchup-source="{catchup_url}",{name}\n'
                     sub_content += f'{play_url}\n'
                 else:
                     # 两字段：频道名,URL（UDPXY版本）
                     url = parts[1]
-                    sub_content += f'#EXTINF:-1 tvg-id="" tvg-name="{name}" tvg-logo="" group-title="",{name}\n'
+                    sub_content += f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}" tvg-logo="" group-title="",{name}\n'
                     sub_content += f'{url}\n'
 
         # 返回文本内容，设置正确的 Content-Type
@@ -144,10 +166,62 @@ def rtsp_status():
         "sync_schedule": "每天 16:00 自动同步"
     })
 
+# EPG 节目单 - XMLTV 格式（兼容 APTV/Tvheadend 等）
+@app.route('/epg.xml')
+def epg_xml():
+    refresh = request.args.get('refresh', '').lower() in ('true', '1')
+    days = request.args.get('days', 2, type=int)
+    try:
+        get_epg(refresh=refresh, days=days)  # 确保数据已生成
+        with open('static/epg.xml', 'r', encoding='utf-8') as f:
+            xml_data = f.read()
+        return Response(xml_data, mimetype='application/xml; charset=utf-8')
+    except FileNotFoundError:
+        return "EPG 数据尚未生成，请先访问 /refresh_epg", 404
+
+# EPG 节目单 - JSON 格式（前端使用）
+@app.route('/api/epg')
+def api_epg():
+    refresh = request.args.get('refresh', '').lower() in ('true', '1')
+    days = request.args.get('days', 2, type=int)
+    programs = get_epg(refresh=refresh, days=days)
+    return jsonify({
+        'total': len(programs),
+        'programs': programs
+    })
+
+# 手动刷新 EPG
+@app.route('/refresh_epg')
+def refresh_epg():
+    try:
+        programs = get_epg(refresh=True)
+        return jsonify({
+            'success': True,
+            'message': f'EPG 更新完成，获取到 {len(programs)} 个节目',
+            'total': len(programs)
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+# EPG 初始化（抓取前面 8 天数据：过去 6 天 + 今天 + 明天）
+@app.route('/init_epg')
+def init_epg():
+    try:
+        days = request.args.get('days', 8, type=int)
+        programs = get_epg(refresh=True, days=days)
+        return jsonify({
+            'success': True,
+            'message': f'EPG 初始化完成，获取到 {len(programs)} 个节目（天数: {days}）',
+            'total': len(programs)
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 # 定义定时任务的逻辑
 def job():
     with app.app_context():  # 确保在 Flask 应用上下文中运行
-        get_channels()  # 调用 get_channels() 函数执行任务
+        get_channels()  # 同步频道列表
+        get_epg(refresh=True)  # 同步 EPG 节目数据
 
 # 启动调度器
 def start_scheduler():
@@ -160,4 +234,4 @@ def start_scheduler():
 # 在应用启动时启动调度器
 if __name__ == '__main__':
     start_scheduler()  # 启动调度器
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=8081)

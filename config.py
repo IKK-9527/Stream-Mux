@@ -11,7 +11,8 @@ DEFAULT_CONFIG = {
     "USER_AGENT": ("Mozilla/5.0 (compatible; EIS iPanel 2.0; Linux2.4.26/mips; win32; HI3110) "
                    "AppleWebKit/2.0 (KHTML, like Gecko) EC2106V1H Hybroad;Resolution(PAL,720P,1080i)"),
     "Authenticator": "",
-    "UDPXY": ""
+    "UDPXY": "",
+    "EPG_HOST": "http://172.23.35.201:8080"
 }
 
 def load_config():

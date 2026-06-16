@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
 import re
@@ -6,6 +6,8 @@ from config import load_config
 from flask import render_template, Flask, request, redirect, url_for, flash, jsonify
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import quote as url_quote, urlparse, parse_qs
 
 app = Flask(__name__)  # 添加这行，确保在使用 flash 之前定义
 app.secret_key = 'your_secret_key'  # 添加这行，用于 flash 消息加密
@@ -19,6 +21,7 @@ STBID = config['STBID']
 USER_AGENT = config['USER_AGENT']
 Authenticator = config['Authenticator']
 UDPXY = config['UDPXY']
+EPG_HOST = config.get('EPG_HOST', 'http://172.23.35.201:8080')
 
 def get_user_token():
     try:
@@ -169,10 +172,11 @@ def get_channels():
 
                 if rtsp_url:
                     # 生成带时间变量的 URL（用于 APTV catchup-source）
+                    # 使用 Playseek 格式（兼容 APTV playseek 标准和 RTSP 服务器 API）
                     if '?' in rtsp_url:
-                        rtsp_url_catchup = rtsp_url + '&starttime=${(b)yyyyMMddHHmmss}&endtime=${(e)yyyyMMddHHmmss}'
+                        rtsp_url_catchup = rtsp_url + '&Playseek=${(b)yyyyMMddHHmmss:utc}-${(e)yyyyMMddHHmmss:utc}'
                     else:
-                        rtsp_url_catchup = rtsp_url + '?starttime=${(b)yyyyMMddHHmmss}&endtime=${(e)yyyyMMddHHmmss}'
+                        rtsp_url_catchup = rtsp_url + '?Playseek=${(b)yyyyMMddHHmmss:utc}-${(e)yyyyMMddHHmmss:utc}'
                     channels_rtsp.append(f"{channel_name},{rtsp_url_catchup},{rtsp_url}")
 
                 # 提取 usersessionid 用于分析有效期
@@ -241,6 +245,282 @@ def get_sync_info():
     except (FileNotFoundError, json.JSONDecodeError):
         return None
 
+
+# ========== EPG 节目单功能 ==========
+
+def get_channel_id_mapping():
+    """从 channels_rtsp.txt 提取频道名和 channelId 的映射"""
+    mapping = {}
+    try:
+        with open('static/channels_rtsp.txt', 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(',', 2)
+                if len(parts) < 2:
+                    continue
+                name = parts[0]
+                url = parts[1]  # 使用 catchup URL（第一个 URL）
+                # 尝试从 programid 或 channelId 参数提取
+                match = re.search(r'[?&](?:programid|channelId)=([^&]+)', url)
+                if match:
+                    channel_id = match.group(1)
+                    mapping[channel_id] = name
+    except FileNotFoundError:
+        pass
+    return mapping
+
+
+def get_epg_session():
+    """创建 EPG 服务器会话，返回 (session, user_token)"""
+    import requests as req
+    session = req.Session()
+
+    # 获取用户 token
+    user_token = get_user_token()
+    if not user_token:
+        return None, None
+
+    token = user_token[0]
+
+    headers = {
+        "Accept-Encoding": "deflate, gzip",
+        "Origin": f"{EPG_HOST}",
+        "User-Agent": USER_AGENT,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Connection": "Keep-Alive",
+    }
+
+    # 1. 访问 EPG_HOST 的 index.jsp 初始化会话（如 STB 抓包所示）
+    try:
+        session.get(
+            f"{EPG_HOST}/iptvepg/function/index.jsp",
+            params={
+                "UserGroupNMB": "31", "EPGGroupNMB": "31",
+                "UserToken": token, "UserID": USER_ID, "STBID": STBID,
+                "easip": "172.16.5.214", "networkid": "1", "loadbalanced": "-1"
+            },
+            headers={**headers, "Referer": f"{EPG_HOST}/iptvepg/function/index.jsp"},
+            timeout=10
+        )
+    except Exception:
+        pass
+
+    # 2. POST funcportalauth.jsp 在 EPG_HOST 上建立认证（STB 抓包的关键步骤）
+    try:
+        payload = (
+            f"UserToken={token}&UserID={USER_ID}&STBID={STBID}"
+            f"&stbinfo=&prmid=&easip=172.16.5.214&networkid=1"
+            f"&stbtype=EC2106V1H_pub&drmsupplier="
+        )
+        session.post(
+            f"{EPG_HOST}/iptvepg/function/funcportalauth.jsp",
+            data=payload,
+            headers={**headers,
+                "Referer": f"{EPG_HOST}/iptvepg/function/index.jsp?loadbalanced=0",
+                "Origin": f"{EPG_HOST}",
+            },
+            timeout=10
+        )
+    except Exception:
+        pass
+
+    return session, token
+
+
+def rebuild_epg_session(session, token, channel_id):
+    """重建 EPG 会话（EPG 服务器要求先触发 rebuild 再获取数据）"""
+    epg_url = f"{EPG_HOST}/iptvepg/frame1265/utilsData/tVodProgramList.jsp"
+    params = {"channelId": channel_id, "dateIndex": 0, "dateSize": 2, "tVodNumPerPage": 999}
+    headers = {
+        "Accept-Encoding": "gzip",
+        "Referer": f"{EPG_HOST}/iptvepg/frame1265/channel/channelPlayingList.html",
+        "Accept-Language": "zh-cn",
+        "User-Agent": USER_AGENT,
+        "Accept": "text/xml, text/html, application/xhtml+xml, image/png, text/plain, */*;q=0.8"
+    }
+
+    # 第一次调用触发 rebuild 页面
+    try:
+        r = session.get(epg_url, params=params, headers=headers, timeout=10)
+        raw_text = r.content.decode('GBK', errors='replace')
+        match = re.search(r"frameurl=([^']+)'", raw_text)
+        if match:
+            # 使用正确的 rebuild 路径：/iptvepg/function/ 而非 /frame1265/utilsData/
+            rebuild_url = f"{EPG_HOST}/iptvepg/function/rebuildsessionresponse.jsp"
+            session.get(
+                rebuild_url,
+                params={"UserToken": token, "ismenu": 0, "frameurl": url_quote(match.group(1))},
+                headers=headers,
+                timeout=10
+            )
+    except Exception:
+        pass
+
+
+def fetch_epg_for_channel(session, channel_id, channel_name, date_indexes=None):
+    """获取单个频道的 EPG 数据，支持多天循环"""
+    if date_indexes is None:
+        date_indexes = [-1, 0, 1]  # 默认：昨天(-1) + 今天(0) + 明天(1)
+    headers = {
+        "Accept-Encoding": "gzip",
+        "Referer": f"{EPG_HOST}/iptvepg/frame1265/channel/channelPlayingList.html",
+        "Accept-Language": "zh-cn",
+        "User-Agent": USER_AGENT,
+        "Accept": "text/xml, text/html, application/xhtml+xml, image/png, text/plain, */*;q=0.8"
+    }
+
+    all_programs = []
+    for di in date_indexes:
+        try:
+            # dateIndex=0 需要 dateSize>=2 才能获取到当天数据
+            ds = 2 if di == 0 else 1
+            params = {"channelId": channel_id, "dateIndex": di, "dateSize": ds, "tVodNumPerPage": 999}
+            r = session.get(
+                f"{EPG_HOST}/iptvepg/frame1265/utilsData/tVodProgramList.jsp",
+                params=params, headers=headers, timeout=15
+            )
+            r.raise_for_status()
+            try:
+                raw_text = r.content.decode('utf-8')
+            except UnicodeDecodeError:
+                raw_text = r.content.decode('GBK', errors='replace')
+
+            if not raw_text.strip().startswith('['):
+                continue
+
+            data = json.loads(raw_text)
+            for day_data in data[1]['data']:
+                for prog in day_data:
+                    all_programs.append({
+                        'start': prog['beginTimeFormat'],
+                        'stop': prog['endTimeFormat'],
+                        'title': prog['programName'],
+                        'channel_id': channel_id,
+                        'channel_name': channel_name
+                    })
+        except Exception:
+            continue
+
+    return all_programs if all_programs else None
+
+
+def fetch_all_epg(max_workers=10, date_indexes=None):
+    """获取所有频道的 EPG 数据"""
+    if date_indexes is None:
+        date_indexes = [-1, 0, 1]  # 默认：昨天(-1) + 今天(0) + 明天(1)
+    mapping = get_channel_id_mapping()
+    if not mapping:
+        return []
+    
+    all_programs = []
+    channel_ids = list(mapping.items())
+    
+    def process_channel(item):
+        cid, cname = item
+        local_session, local_token = get_epg_session()
+        if not local_session:
+            return None
+        # 先 rebuild 一次（调用 rebuildsessionresponse.jsp 重建会话）
+        rebuild_epg_session(local_session, local_token, cid)
+        # 抓取多天数据
+        return fetch_epg_for_channel(local_session, cid, cname, date_indexes=date_indexes)
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(process_channel, item): item for item in channel_ids}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                all_programs.extend(result)
+    
+    # 按时间排序
+    all_programs.sort(key=lambda x: (x['start'], x['channel_name']))
+    return all_programs
+
+
+def build_xmltv(programs):
+    """将 EPG 数据构建为 XMLTV 格式"""
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE tv SYSTEM "http://www.xmltvepg.dtd">',
+        '<tv generator-info-name="AutoIPTV">'
+    ]
+    
+    # 收集所有频道
+    channels = {}
+    for p in programs:
+        if p['channel_id'] not in channels:
+            channels[p['channel_id']] = p['channel_name']
+    
+    # 输出 channel 信息
+    for cid, cname in channels.items():
+        lines.append(f'  <channel id="{cid}">')
+        lines.append(f'    <display-name lang="zh">{cname}</display-name>')
+        lines.append(f'  </channel>')
+    
+    # 输出 programme 信息
+    for p in programs:
+        # EPG 服务器返回的是北京时间 (UTC+8)，标注时区供播放器正确解析
+        start_str = p['start'] + " +0800"
+        stop_str = p['stop'] + " +0800"
+        lines.append(f'  <programme start="{start_str}" stop="{stop_str}" channel="{p["channel_id"]}">')
+        lines.append(f'    <title lang="zh">{p["title"]}</title>')
+        lines.append(f'  </programme>')
+    
+    lines.append('</tv>')
+    return '\n'.join(lines)
+
+
+def get_epg(refresh=False, days=2):
+    """获取 EPG 数据，优先使用缓存
+    days: 抓取天数，days=8 表示过去6天+今天+明天"""
+    cache_file = 'static/epg_cache.json'
+    xml_file = 'static/epg.xml'
+    
+    if not refresh:
+        # 尝试从缓存读取
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
+                cache_time = cached.get('cache_time', 0)
+                cache_days = cached.get('days', 0)
+                # 缓存 1 小时内有效，且天数一致
+                if datetime.now().timestamp() - cache_time < 3600 and cache_days == days:
+                    return cached.get('programs', [])
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+    
+    # 计算需要抓取的日期索引（EPG 服务器 dateIndex:-1=昨天, 0=今天, 1=明天）
+    if days >= 2:
+        # days=2 -> dateIndex: -1(昨天), 0(今天), 1(明天)
+        # days=8 -> dateIndex: -7,...,-1(过去7天), 0(今天), 1,...,7(未来7天)
+        date_indexes = list(range(-(days - 1), days))
+    else:
+        date_indexes = [0]
+    
+    # 重新获取
+    programs = fetch_all_epg(date_indexes=date_indexes)
+    
+    # 保存缓存
+    cache_data = {
+        'cache_time': datetime.now().timestamp(),
+        'days': days,
+        'programs': programs
+    }
+    with open(cache_file, 'w', encoding='utf-8') as f:
+        json.dump(cache_data, f, ensure_ascii=False, indent=2)
+    
+    # 生成并保存 XMLTV
+    xmltv = build_xmltv(programs)
+    with open(xml_file, 'w', encoding='utf-8') as f:
+        f.write(xmltv)
+    
+    log_message(f"EPG 更新完成，获取到 {len(programs)} 个节目（天数: {days}）")
+    return programs
+
+
 @app.route('/')
 def index():
     config = load_config()
@@ -269,7 +549,8 @@ def save_config():
             'USER_ID': user_id,
             'STBID': stbid,
             'USER_AGENT': request.form.get('user_agent', '').strip(),
-            'Authenticator': authenticator
+            'Authenticator': authenticator,
+            'EPG_HOST': request.form.get('epg_host', '').strip()
         }
         
         # 保存配置
@@ -277,7 +558,7 @@ def save_config():
             json.dump(new_config, f, indent=4, ensure_ascii=False)
         
         # 更新全局配置变量
-        global config, BASE_URL, USER_ID, STBID, USER_AGENT, Authenticator, UDPXY
+        global config, BASE_URL, USER_ID, STBID, USER_AGENT, Authenticator, UDPXY, EPG_HOST
         config = new_config
         BASE_URL = new_config['BASE_URL']
         USER_ID = new_config['USER_ID']
@@ -285,6 +566,7 @@ def save_config():
         USER_AGENT = new_config['USER_AGENT']
         Authenticator = new_config['Authenticator']
         UDPXY = new_config['UDPXY']
+        EPG_HOST = new_config.get('EPG_HOST', 'http://172.23.35.201:8080')
         # 更新频道列表
         result = get_channels()
         flash('配置保存成功，频道列表已更新')
