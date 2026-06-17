@@ -12,7 +12,14 @@ DEFAULT_CONFIG = {
                    "AppleWebKit/2.0 (KHTML, like Gecko) EC2106V1H Hybroad;Resolution(PAL,720P,1080i)"),
     "Authenticator": "",
     "UDPXY": "",
-    "EPG_HOST": "http://172.23.35.201:8080"
+    "EPG_HOST": "http://172.23.35.201:8080",
+    "STB_IP": "172.34.24.71",
+    "STB_TYPE": "B860AV1.1-T2",
+    "MAC": "",
+    "ENCRYPT_KEY": "",
+    "DNS_SERVERS": "172.16.5.144,172.16.5.145",
+    "EAS_DOMAIN": "epg.itv.cq.cn",
+    "EAS_IP": "172.16.5.217"
 }
 
 def load_config():

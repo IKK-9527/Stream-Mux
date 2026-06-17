@@ -407,8 +407,8 @@
                                 <input type="text" class="form-control" name="stbid" value="{{ config.STBID }}" required>
                             </div>
                             <div class="col-md-4">
-                                <label class="form-label">Authenticator <span class="text-danger">*</span></label>
-                                <input type="text" class="form-control" name="authenticator" value="{{ config.Authenticator }}" required>
+                                <label class="form-label">STB IP <span class="text-danger">*</span></label>
+                                <input type="text" class="form-control" name="stb_ip" value="{{ config.get('STB_IP', '172.34.24.71') }}" placeholder="机顶盒 IP 地址">
                             </div>
                             <div class="col-md-6">
                                 <label class="form-label">USER_AGENT</label>
@@ -417,6 +417,51 @@
                             <div class="col-md-6">
                                 <label class="form-label">EPG 服务器地址</label>
                                 <input type="text" class="form-control" name="epg_host" value="{{ config.get('EPG_HOST', '') }}">
+                            </div>
+                        </div>
+
+                        <hr>
+                        <h6 class="fw-bold mb-3">
+                            <i class="bi-shield-lock"></i> 动态 Authenticator 配置（可选）
+                            {% if config.get('DYNAMIC_AUTH_ENABLED') %}
+                                <span class="badge bg-success ms-2">已启用</span>
+                            {% else %}
+                                <span class="badge bg-secondary ms-2">未启用</span>
+                            {% endif %}
+                        </h6>
+                        <p class="text-muted small mb-3">
+                            配置 MAC 地址和加密密钥后，系统将自动从服务器获取 EncryptToken 生成 Authenticator，不再依赖静态配置的 Authenticator。
+                            如不配置，则继续使用下方静态 Authenticator。
+                        </p>
+                        <div class="row g-3">
+                            <div class="col-md-4">
+                                <label class="form-label">STB_TYPE <span class="text-muted small">(机型)</span></label>
+                                <input type="text" class="form-control" name="stb_type" value="{{ config.get('STB_TYPE', '') }}" placeholder="如: B860AV1.1-T2">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">MAC 地址 <span class="text-danger">*</span></label>
+                                <input type="text" class="form-control" name="mac" value="{{ config.get('MAC', '') }}" placeholder="如: 00:11:22:33:44:55" pattern="^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$" title="MAC 地址格式: 00:11:22:33:44:55">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">ENCRYPT_KEY <span class="text-danger">*</span></label>
+                                <input type="text" class="form-control" name="encrypt_key" value="{{ config.get('ENCRYPT_KEY', '') }}" placeholder="8位加密密钥，需从机顶盒获取或爆破">
+                            </div>
+                        </div>
+
+                        <hr>
+                        <h6 class="fw-bold mb-3">
+                            <i class="bi-key"></i> 静态 Authenticator（回退方案）
+                            {% if config.get('DYNAMIC_AUTH_ENABLED') %}
+                                <span class="badge bg-warning ms-2">回退</span>
+                            {% else %}
+                                <span class="badge bg-danger ms-2">当前使用</span>
+                            {% endif %}
+                        </h6>
+                        <div class="row g-3">
+                            <div class="col-12">
+                                <label class="form-label">Authenticator <span class="text-danger">*</span></label>
+                                <input type="text" class="form-control" name="authenticator" value="{{ config.Authenticator }}" required>
+                                <small class="text-muted">当动态生成失败时使用此值。如果已启用动态认证，此字段可作为回退。</small>
                             </div>
                         </div>
                         <hr>

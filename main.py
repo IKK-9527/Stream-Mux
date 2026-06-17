@@ -7,8 +7,13 @@ from flask import render_template, Flask, request, redirect, url_for, flash, jso
 import json
 import os
 import time
+import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote as url_quote, urlparse, parse_qs
+from Crypto.Cipher import DES3, DES
+from Crypto.Util.Padding import pad
+import binascii
+import dns.resolver
 
 app = Flask(__name__)  # 添加这行，确保在使用 flash 之前定义
 app.secret_key = 'your_secret_key'  # 添加这行，用于 flash 消息加密
@@ -23,41 +28,207 @@ USER_AGENT = config['USER_AGENT']
 Authenticator = config['Authenticator']
 UDPXY = config['UDPXY']
 EPG_HOST = config.get('EPG_HOST', 'http://172.23.35.201:8080')
+# 动态 Authenticator 生成相关
+STB_IP = config.get('STB_IP', '172.34.24.71')
+STB_TYPE = config.get('STB_TYPE', '')
+MAC = config.get('MAC', '')
+ENCRYPT_KEY = config.get('ENCRYPT_KEY', '')
+DNS_SERVERS = config.get('DNS_SERVERS', '172.16.5.144,172.16.5.145')
+EAS_DOMAIN = config.get('EAS_DOMAIN', 'epg.itv.cq.cn')
 
-def get_user_token():
+# ========== Token 缓存 ==========
+# Token 有效期 48 小时，避免频繁重新认证
+_token_cache = {"token": None, "time": 0}
+TOKEN_TTL = 48 * 3600  # 48 小时（秒）
+
+# ========== EAS 服务器地址 ==========
+# EAS_IP 有值 → 直接使用（跳过 DNS）
+# EAS_IP 为空 → 用 DNS_SERVERS 解析域名
+EAS_IP = config.get('EAS_IP', '').strip()
+if not EAS_IP and DNS_SERVERS:
+    dns_servers_list = [s.strip() for s in DNS_SERVERS.split(',') if s.strip()]
+    if dns_servers_list:
+        try:
+            _resolver = dns.resolver.Resolver()
+            _resolver.nameservers = dns_servers_list
+            _resolver.timeout = 3
+            _resolver.lifetime = 5
+            answers = _resolver.resolve(EAS_DOMAIN, 'A')
+            EAS_IP = str(answers[0])
+            print(f"[AutoIPTV] DNS 解析: {EAS_DOMAIN} → {EAS_IP}")
+        except Exception as e:
+            print(f"[AutoIPTV] DNS 解析失败: {e}")
+if EAS_IP:
+    print(f"[AutoIPTV] EAS 服务器: {EAS_DOMAIN} @ {EAS_IP}:8080")
+
+
+# ========== 动态 Authenticator 生成 ==========
+
+def get_encrypt_token():
+    """调用 getencrypttoken.jsp 获取 EncryptToken
+    用解析到的 EAS_IP + Host 头发送请求"""
+    # 确定目标 IP（解析到的 IP 或回退域名）
+    if EAS_IP:
+        eas_base = f"http://{EAS_IP}:8080"
+    else:
+        eas_base = f"http://{EAS_DOMAIN}:8080"
+
+    params = {
+        "UserID": USER_ID,
+        "Action": "Login",
+        "TerminalFlag": "1",
+        "TerminalOsType": "0",
+        "STBID": STBID,
+        "stbtype": STB_TYPE
+    }
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-cn",
+        "Accept-Encoding": "gzip",
+        "Host": f"{EAS_DOMAIN}:8080",  # 关键：用域名 Host 头
+        "Referer": f"http://{EAS_DOMAIN}:8080/iptvepg/platform/index.jsp?UserID={USER_ID}&Action=Login&FCCSupport=1"
+    }
+    url = f"{eas_base}/iptvepg/platform/getencrypttoken.jsp"
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        response.raise_for_status()
+        match = re.search(r"GetAuthInfo\('(.*?)'\)", response.text)
+        if match:
+            token = match.group(1)
+            log_message(f"获取 EncryptToken 成功: {token[:30]}...")
+            return token
+        else:
+            log_message("获取 EncryptToken 失败: 未找到 GetAuthInfo 调用")
+            return None
+    except Exception as e:
+        log_message(f"获取 EncryptToken 异常: {str(e)}")
+        return None
+
+
+def generate_authenticator_3des(encrypt_token, key, rand_num=None):
+    """使用 3DES ECB 生成 Authenticator (论坛通用算法)
+    注意: 部分 3DES 密钥会退化为单 DES，此时自动降级为 DES"""
+    if rand_num is None:
+        rand_num = str(random.randint(10000000, 99999999))
+    # 构建明文字符串: random$token$UserID$STBID$IP$MAC$$CTC
+    plaintext = f"{rand_num}${encrypt_token}${USER_ID}${STBID}${STB_IP}${MAC}$$CTC"
+    msg_bytes = plaintext.encode('utf-8')
+    padded_msg = pad(msg_bytes, DES3.block_size)
+
+    # 3DES 密钥: 取 key 前 8 位小写 + 16 个 null 字节 = 24 字节
+    # 部分 key 会导致 3DES 退化，此时回退到 DES
+    key_str = key[:8].lower()
+    try:
+        key_bytes = key_str.encode('ascii') + (b'\x00' * 16)
+        cipher = DES3.new(key_bytes, DES3.MODE_ECB)
+        encrypted = cipher.encrypt(padded_msg)
+        return binascii.hexlify(encrypted).decode('utf-8').upper()
+    except ValueError:
+        # 3DES 退化，使用 DES
+        pass
+
+    # 降级: 当 K2==K3 时 3DES 退化为 DES，直接用 DES
+    des_key = key_str[:8].ljust(8, '0')
+    des_cipher = DES.new(des_key.encode('ascii'), DES.MODE_ECB)
+    encrypted = des_cipher.encrypt(padded_msg)
+    return binascii.hexlify(encrypted).decode('utf-8').upper()
+
+
+def generate_authenticator_des(encrypt_token, key, rand_num=None):
+    """使用 DES ECB 生成 Authenticator (山东联通参考算法)"""
+    if rand_num is None:
+        rand_num = str(random.randint(10000000, 99999999))
+    plaintext = f"{rand_num}${encrypt_token}${USER_ID}${STBID}${STB_IP}${MAC}$$CTC"
+    # DES 密钥: 取 key 前 8 位, 不足补 '0'
+    key_str = key[:8].ljust(8, '0')
+    key_bytes = key_str.encode('utf-8')
+    msg_bytes = plaintext.encode('utf-8')
+    padded_msg = pad(msg_bytes, DES.block_size)
+    cipher = DES.new(key_bytes, DES.MODE_ECB)
+    encrypted = cipher.encrypt(padded_msg)
+    return binascii.hexlify(encrypted).decode('utf-8').upper()
+
+
+def generate_authenticator(encrypt_token):
+    """根据配置自动选择合适的加密算法生成 Authenticator"""
+    if not ENCRYPT_KEY or not MAC:
+        log_message("动态 Authenticator 生成失败: 缺少 ENCRYPT_KEY 或 MAC")
+        return None
+    # 先尝试 3DES (部分密钥退化为 DES 时自动降级)
+    try:
+        auth = generate_authenticator_3des(encrypt_token, ENCRYPT_KEY)
+        log_message("Authenticator 动态生成成功")
+        return auth
+    except Exception as e:
+        log_message(f"3DES 生成失败, 尝试 DES: {str(e)}")
+    # 回退 DES 方式
+    try:
+        auth = generate_authenticator_des(encrypt_token, ENCRYPT_KEY)
+        log_message("Authenticator 动态生成成功 (DES)")
+        return auth
+    except Exception as e:
+        log_message(f"DES 生成也失败: {str(e)}")
+        return None
+
+
+def get_user_token(force_refresh=False):
+    """获取用户 token，带 48 小时缓存"""
+    global _token_cache, Authenticator
+
+    # 检查缓存
+    now = time.time()
+    if not force_refresh and _token_cache["token"] and (now - _token_cache["time"]) < TOKEN_TTL:
+        return _token_cache["token"]
+
+    # 缓存过期或强制刷新 → 重新认证
+    use_dynamic = bool(ENCRYPT_KEY and MAC)
+    if use_dynamic:
+        encrypt_token = get_encrypt_token()
+        if encrypt_token:
+            dynamic_auth = generate_authenticator(encrypt_token)
+            if dynamic_auth:
+                log_message("使用动态生成的 Authenticator 进行认证")
+                auth_value = dynamic_auth
+            else:
+                log_message("动态生成 Authenticator 失败，回退到静态配置")
+                auth_value = Authenticator
+        else:
+            log_message("获取 EncryptToken 失败，回退到静态配置")
+            auth_value = Authenticator
+    else:
+        auth_value = Authenticator
+
     try:
         url = f"{BASE_URL}/iptvepg/platform/auth.jsp"
         querystring = {"easip": "172.16.5.214", "ipVersion": "4", "networkid": "1", "serterminalno": "9923"}
-        payload = f"UserID={USER_ID}&Authenticator={Authenticator}&StbIP=172.34.24.71"
+        payload = f"UserID={USER_ID}&Authenticator={auth_value}&StbIP={STB_IP}"
         headers = {
             "Accept-Encoding": "deflate, gzip",
             "Origin": "http://epg.itv.cq.cn:8080",
             "User-Agent": USER_AGENT,
             "Accept": "application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5",
             "Connection": "Keep-Alive",
-            "Content-Length": "315",
             "content-type": "application/x-www-form-urlencoded"
         }
         response = requests.request("POST", url, data=payload, headers=headers, params=querystring)
-        response.raise_for_status()  # 检查响应状态
+        response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
-        # 查找所有<script>标签
         script_tags = soup.find_all('script')
-        # 遍历每个<script>标签，查找包含UserToken的内容
         for script in script_tags:
-            # 如果script.string存在且包含UserToken
             if script.string and 'jsSetConfig(\'UserToken\'' in script.string:
-                # 提取UserToken的值
                 match = re.search(r"jsSetConfig\('UserToken',\s*'([^']+)'", script.string)
                 if match:
                     jsessionid = response.cookies.get('JSESSIONID')
                     user_token = match.group(1)
                     token_jsessionid = [user_token, jsessionid]
-                    # 模拟访问iptvepg/function/index.jsp，不知道为啥要模拟访问下才能获取播放地址
+                    # 写入缓存
+                    _token_cache["token"] = token_jsessionid
+                    _token_cache["time"] = now
                     get_stbid(user_token, jsessionid)
                     return token_jsessionid
     except requests.exceptions.RequestException as e:
-        log_message(f"网络请求失败：{str(e)}")  # 使用log_message函数来追加日志
+        log_message(f"网络请求失败：{str(e)}")
         return None
 
 
@@ -96,7 +267,6 @@ def post_sessionid(user_token, jsessionid):
         "Accept": "application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5",
         "Connection": "Keep-Alive",
         "Content-Length": "189",
-        "content-type": "application/x-www-form-urlencoded",
         "cookie": "JSESSIONID=" + jsessionid + ""
 
     }
@@ -273,64 +443,6 @@ def get_channel_id_mapping():
     return mapping
 
 
-def get_epg_session():
-    """创建 EPG 服务器会话，返回 (session, user_token)"""
-    import requests as req
-    session = req.Session()
-
-    # 获取用户 token
-    user_token = get_user_token()
-    if not user_token:
-        return None, None
-
-    token = user_token[0]
-
-    headers = {
-        "Accept-Encoding": "deflate, gzip",
-        "Origin": f"{EPG_HOST}",
-        "User-Agent": USER_AGENT,
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Connection": "Keep-Alive",
-    }
-
-    # 1. 访问 EPG_HOST 的 index.jsp 初始化会话（如 STB 抓包所示）
-    try:
-        session.get(
-            f"{EPG_HOST}/iptvepg/function/index.jsp",
-            params={
-                "UserGroupNMB": "31", "EPGGroupNMB": "31",
-                "UserToken": token, "UserID": USER_ID, "STBID": STBID,
-                "easip": "172.16.5.214", "networkid": "1", "loadbalanced": "-1"
-            },
-            headers={**headers, "Referer": f"{EPG_HOST}/iptvepg/function/index.jsp"},
-            timeout=10
-        )
-    except Exception:
-        pass
-
-    # 2. POST funcportalauth.jsp 在 EPG_HOST 上建立认证（STB 抓包的关键步骤）
-    try:
-        payload = (
-            f"UserToken={token}&UserID={USER_ID}&STBID={STBID}"
-            f"&stbinfo=&prmid=&easip=172.16.5.214&networkid=1"
-            f"&stbtype=EC2106V1H_pub&drmsupplier="
-        )
-        session.post(
-            f"{EPG_HOST}/iptvepg/function/funcportalauth.jsp",
-            data=payload,
-            headers={**headers,
-                "Referer": f"{EPG_HOST}/iptvepg/function/index.jsp?loadbalanced=0",
-                "Origin": f"{EPG_HOST}",
-            },
-            timeout=10
-        )
-    except Exception:
-        pass
-
-    return session, token
-
-
 def rebuild_epg_session(session, token, channel_id):
     """重建 EPG 会话（EPG 服务器要求先触发 rebuild 再获取数据）"""
     epg_url = f"{EPG_HOST}/iptvepg/frame1265/utilsData/tVodProgramList.jsp"
@@ -415,27 +527,73 @@ def fetch_all_epg(max_workers=10, date_indexes=None):
     mapping = get_channel_id_mapping()
     if not mapping:
         return []
-    
+
+    # 先认证一次，获取 user_token
+    user_token = get_user_token()
+    if not user_token:
+        log_message("EPG: 获取用户 token 失败")
+        return []
+    token = user_token[0]
+
     all_programs = []
     channel_ids = list(mapping.items())
-    
+
     def process_channel(item):
         cid, cname = item
-        local_session, local_token = get_epg_session()
-        if not local_session:
-            return None
-        # 先 rebuild 一次（调用 rebuildsessionresponse.jsp 重建会话）
-        rebuild_epg_session(local_session, local_token, cid)
-        # 抓取多天数据
-        return fetch_epg_for_channel(local_session, cid, cname, date_indexes=date_indexes)
-    
+        import requests as req
+        session = req.Session()
+        headers = {
+            "Accept-Encoding": "deflate, gzip",
+            "Origin": f"{EPG_HOST}",
+            "User-Agent": USER_AGENT,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Connection": "Keep-Alive",
+        }
+        # 初始化会话
+        try:
+            session.get(
+                f"{EPG_HOST}/iptvepg/function/index.jsp",
+                params={
+                    "UserGroupNMB": "31", "EPGGroupNMB": "31",
+                    "UserToken": token, "UserID": USER_ID, "STBID": STBID,
+                    "easip": "172.16.5.214", "networkid": "1", "loadbalanced": "-1"
+                },
+                headers={**headers, "Referer": f"{EPG_HOST}/iptvepg/function/index.jsp"},
+                timeout=10
+            )
+        except Exception:
+            pass
+        # funcportalauth
+        try:
+            payload = (
+                f"UserToken={token}&UserID={USER_ID}&STBID={STBID}"
+                f"&stbinfo=&prmid=&easip=172.16.5.214&networkid=1"
+                f"&stbtype=EC2106V1H_pub&drmsupplier="
+            )
+            session.post(
+                f"{EPG_HOST}/iptvepg/function/funcportalauth.jsp",
+                data=payload,
+                headers={**headers,
+                    "Referer": f"{EPG_HOST}/iptvepg/function/index.jsp?loadbalanced=0",
+                    "Origin": f"{EPG_HOST}",
+                },
+                timeout=10
+            )
+        except Exception:
+            pass
+        # rebuild
+        rebuild_epg_session(session, token, cid)
+        # 获取 EPG
+        return fetch_epg_for_channel(session, cid, cname, date_indexes=date_indexes)
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(process_channel, item): item for item in channel_ids}
         for future in as_completed(futures):
             result = future.result()
             if result:
                 all_programs.extend(result)
-    
+
     # 按时间排序
     all_programs.sort(key=lambda x: (x['start'], x['channel_name']))
     return all_programs
@@ -549,6 +707,8 @@ def index():
     channels_rtsp = get_channels_rtsp_content()
     logs = get_logs_content()
     sync_info = get_sync_info()
+    # 判断是否启用了动态 Authenticator 生成
+    config['DYNAMIC_AUTH_ENABLED'] = bool(config.get('MAC') and config.get('ENCRYPT_KEY'))
     return render_template('index.html', config=config, channels=channels, channels_rtsp=channels_rtsp, logs=logs, sync_info=sync_info)
 
 @app.route('/save_config', methods=['POST'])
@@ -558,11 +718,11 @@ def save_config():
         user_id = request.form.get('user_id', '').strip()
         stbid = request.form.get('stbid', '').strip()
         authenticator = request.form.get('authenticator', '').strip()
-        
+
         if not all([user_id, stbid, authenticator]):
             flash('USER_ID、STBID 和 Authenticator 为必填项')
             return redirect(url_for('index'))
-            
+
         # 创建新的配置字典
         new_config = {
             'UDPXY': request.form.get('udpxy', '').strip(),
@@ -571,15 +731,23 @@ def save_config():
             'STBID': stbid,
             'USER_AGENT': request.form.get('user_agent', '').strip(),
             'Authenticator': authenticator,
-            'EPG_HOST': request.form.get('epg_host', '').strip()
+            'EPG_HOST': request.form.get('epg_host', '').strip(),
+            'STB_IP': request.form.get('stb_ip', '').strip() or '172.34.24.71',
+            'STB_TYPE': request.form.get('stb_type', '').strip(),
+            'MAC': request.form.get('mac', '').strip().upper(),
+            'ENCRYPT_KEY': request.form.get('encrypt_key', '').strip(),
+            'DNS_SERVERS': request.form.get('dns_servers', '').strip() or '172.16.5.144,172.16.5.145',
+            'EAS_DOMAIN': request.form.get('eas_domain', '').strip() or 'epg.itv.cq.cn',
+            'EAS_IP': request.form.get('eas_ip', '').strip()
         }
-        
+
         # 保存配置
         with open('static/config.json', 'w', encoding='utf-8') as f:
             json.dump(new_config, f, indent=4, ensure_ascii=False)
-        
+
         # 更新全局配置变量
         global config, BASE_URL, USER_ID, STBID, USER_AGENT, Authenticator, UDPXY, EPG_HOST
+        global STB_IP, STB_TYPE, MAC, ENCRYPT_KEY, DNS_SERVERS, EAS_DOMAIN, EAS_IP
         config = new_config
         BASE_URL = new_config['BASE_URL']
         USER_ID = new_config['USER_ID']
@@ -588,6 +756,29 @@ def save_config():
         Authenticator = new_config['Authenticator']
         UDPXY = new_config['UDPXY']
         EPG_HOST = new_config.get('EPG_HOST', 'http://172.23.35.201:8080')
+        STB_IP = new_config.get('STB_IP', '172.34.24.71')
+        STB_TYPE = new_config.get('STB_TYPE', '')
+        MAC = new_config.get('MAC', '')
+        ENCRYPT_KEY = new_config.get('ENCRYPT_KEY', '')
+        DNS_SERVERS = new_config.get('DNS_SERVERS', '172.16.5.144,172.16.5.145')
+        EAS_DOMAIN = new_config.get('EAS_DOMAIN', 'epg.itv.cq.cn')
+        EAS_IP = new_config.get('EAS_IP', '').strip()
+        # 清除 token 缓存（配置变更后强制重新认证）
+        _token_cache["token"] = None
+        _token_cache["time"] = 0
+        # 如果 EAS_IP 为空，尝试重新 DNS 解析
+        if not EAS_IP and DNS_SERVERS:
+            _dns_list = [s.strip() for s in DNS_SERVERS.split(',') if s.strip()]
+            if _dns_list:
+                try:
+                    _resolver = dns.resolver.Resolver()
+                    _resolver.nameservers = _dns_list
+                    _resolver.timeout = 3
+                    _resolver.lifetime = 5
+                    answers = _resolver.resolve(EAS_DOMAIN, 'A')
+                    EAS_IP = str(answers[0])
+                except Exception:
+                    pass
         # 更新频道列表
         result = get_channels()
         flash('配置保存成功，频道列表已更新')
