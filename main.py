@@ -478,9 +478,9 @@ def build_xmltv(programs):
 _epg_memory_cache = None
 _epg_memory_cache_time = 0
 
-def get_epg(refresh=False, days=7):
+def get_epg(refresh=False, days=8):
     """获取 EPG 数据，优先使用缓存
-    days: 抓取天数，默认7天=过去6天(回看)+今天"""
+    days: 抓取天数，默认8天=过去6天(回看)+今天+明天"""
     global _epg_memory_cache, _epg_memory_cache_time
 
     cache_file = 'static/epg_cache.json'
@@ -509,11 +509,11 @@ def get_epg(refresh=False, days=7):
                 pass
 
     # 计算需要抓取的日期索引
-    # EPG 服务器: dateIndex:-5~-1=过去5天, -6=6天前, 0=今天(dS=2)
-    # days=7 -> 过去6天 + 今天 = 7天
+    # EPG 服务器: dateIndex:-6~-1=过去6天, 0=今天(dS=2), 1=明天
+    # days=8 -> 过去6天 + 今天 + 明天 = 8天
     if days >= 2:
-        past_days = max(days - 1, 1)
-        date_indexes = list(range(-past_days, 1))  # 过去N天 + 今天(0)
+        past_days = max(days - 2, 1)
+        date_indexes = list(range(-past_days, 2))  # 过去N天 + 今天(0) + 明天(1)
     else:
         date_indexes = [0]
 

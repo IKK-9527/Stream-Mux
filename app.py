@@ -190,7 +190,7 @@ def api_epg_stats():
 @app.route('/epg.xml')
 def epg_xml():
     refresh = request.args.get('refresh', '').lower() in ('true', '1')
-    days = request.args.get('days', 7, type=int)
+    days = request.args.get('days', 8, type=int)
     try:
         get_epg(refresh=refresh, days=days)  # 确保数据已生成
         with open('static/epg.xml', 'r', encoding='utf-8') as f:
@@ -203,7 +203,7 @@ def epg_xml():
 @app.route('/api/epg')
 def api_epg():
     refresh = request.args.get('refresh', '').lower() in ('true', '1')
-    days = request.args.get('days', 7, type=int)
+    days = request.args.get('days', 8, type=int)
     programs = get_epg(refresh=refresh, days=days)
     return jsonify({
         'total': len(programs),
@@ -268,11 +268,11 @@ def refresh_epg():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
-# EPG 初始化（抓取前面 7 天数据：过去 6 天 + 今天）
+# EPG 初始化（抓取前面 8 天数据：过去 6 天 + 今天 + 明天）
 @app.route('/init_epg')
 def init_epg():
     try:
-        days = request.args.get('days', 7, type=int)
+        days = request.args.get('days', 8, type=int)
         programs = get_epg(refresh=True, days=days)
         return jsonify({
             'success': True,
