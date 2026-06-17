@@ -489,8 +489,12 @@ def get_epg(refresh=False, days=8):
                 # 缓存 1 小时内有效，且天数一致
                 if datetime.now().timestamp() - cache_time < 3600 and cache_days == days:
                     return cached.get('programs', [])
-        except (FileNotFoundError, json.JSONDecodeError):
-            pass
+        except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+            # 缓存文件损坏，删除后重新获取
+            try:
+                os.remove(cache_file)
+            except OSError:
+                pass
 
     # 计算需要抓取的日期索引
     # EPG 服务器: dateIndex:-6~-1=过去6天, 0=今天(dS=2), 1=明天
