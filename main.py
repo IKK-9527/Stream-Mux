@@ -6,6 +6,7 @@ from config import load_config
 from flask import render_template, Flask, request, redirect, url_for, flash, jsonify
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote as url_quote, urlparse, parse_qs
 
@@ -473,41 +474,57 @@ def build_xmltv(programs):
     return '\n'.join(lines)
 
 
-def get_epg(refresh=False, days=8):
+# 内存缓存，避免频繁读取 epg_cache.json
+_epg_memory_cache = None
+_epg_memory_cache_time = 0
+
+def get_epg(refresh=False, days=7):
     """获取 EPG 数据，优先使用缓存
-    days: 抓取天数，默认8天=过去6天(回看)+今天+明天"""
+    days: 抓取天数，默认7天=过去6天(回看)+今天"""
+    global _epg_memory_cache, _epg_memory_cache_time
+
     cache_file = 'static/epg_cache.json'
     xml_file = 'static/epg.xml'
 
     if not refresh:
-        # 尝试从缓存读取
+        # 内存缓存（30秒有效，避免频繁读盘）
+        now = time.time()
+        if _epg_memory_cache is not None and now - _epg_memory_cache_time < 30:
+            return _epg_memory_cache
+        # 尝试从文件缓存读取
         try:
             with open(cache_file, 'r', encoding='utf-8') as f:
                 cached = json.load(f)
                 cache_time = cached.get('cache_time', 0)
                 cache_days = cached.get('days', 0)
-                # 缓存 1 小时内有效，且天数一致
                 if datetime.now().timestamp() - cache_time < 3600 and cache_days == days:
-                    return cached.get('programs', [])
+                    programs = cached.get('programs', [])
+                    _epg_memory_cache = programs
+                    _epg_memory_cache_time = time.time()
+                    return programs
         except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
-            # 缓存文件损坏，删除后重新获取
             try:
                 os.remove(cache_file)
             except OSError:
                 pass
 
     # 计算需要抓取的日期索引
-    # EPG 服务器: dateIndex:-6~-1=过去6天, 0=今天(dS=2), 1=明天
+    # EPG 服务器: dateIndex:-5~-1=过去5天, -6=6天前, 0=今天(dS=2)
+    # days=7 -> 过去6天 + 今天 = 7天
     if days >= 2:
-        past_days = max(days - 2, 1)  # 至少1天过去数据
-        date_indexes = list(range(-past_days, 2))  # 过去N天 + 今天(0) + 明天(1)
+        past_days = max(days - 1, 1)
+        date_indexes = list(range(-past_days, 1))  # 过去N天 + 今天(0)
     else:
         date_indexes = [0]
-    
+
     # 重新获取
     programs = fetch_all_epg(date_indexes=date_indexes)
-    
-    # 保存缓存
+
+    # 写入内存缓存
+    _epg_memory_cache = programs
+    _epg_memory_cache_time = time.time()
+
+    # 保存文件缓存
     cache_data = {
         'cache_time': datetime.now().timestamp(),
         'days': days,
@@ -515,12 +532,12 @@ def get_epg(refresh=False, days=8):
     }
     with open(cache_file, 'w', encoding='utf-8') as f:
         json.dump(cache_data, f, ensure_ascii=False, indent=2)
-    
+
     # 生成并保存 XMLTV
     xmltv = build_xmltv(programs)
     with open(xml_file, 'w', encoding='utf-8') as f:
         f.write(xmltv)
-    
+
     log_message(f"EPG 更新完成，获取到 {len(programs)} 个节目（天数: {days}）")
     return programs
 
