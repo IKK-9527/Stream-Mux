@@ -14,6 +14,7 @@ from Crypto.Cipher import DES3, DES
 from Crypto.Util.Padding import pad
 import binascii
 import dns.resolver
+import threading
 
 app = Flask(__name__)  # 添加这行，确保在使用 flash 之前定义
 app.secret_key = 'your_secret_key'  # 添加这行，用于 flash 消息加密
@@ -60,6 +61,52 @@ if not EAS_IP and DNS_SERVERS:
             print(f"[AutoIPTV] DNS 解析失败: {e}")
 if EAS_IP:
     print(f"[AutoIPTV] EAS 服务器: {EAS_DOMAIN} @ {EAS_IP}:8080")
+
+
+# ========== 服务会话初始化（通用） ==========
+# index.jsp + funcportalauth.jsp，BASE_URL 和 EPG_HOST 共用
+
+def _init_service_session(session, token, host):
+    """在指定 host 上初始化服务会话"""
+    headers = {
+        "Accept-Encoding": "deflate, gzip",
+        "User-Agent": USER_AGENT,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Connection": "Keep-Alive",
+    }
+    # index.jsp - 初始化会话
+    try:
+        session.get(
+            f"{host}/iptvepg/function/index.jsp",
+            params={
+                "UserGroupNMB": "31", "EPGGroupNMB": "31",
+                "UserToken": token, "UserID": USER_ID, "STBID": STBID,
+                "easip": "172.16.5.214", "networkid": "1", "loadbalanced": "-1"
+            },
+            headers={**headers, "Referer": f"{host}/iptvepg/function/index.jsp"},
+            timeout=10
+        )
+    except Exception:
+        pass
+    # funcportalauth.jsp - 通道认证
+    try:
+        payload = (
+            f"UserToken={token}&UserID={USER_ID}&STBID={STBID}"
+            f"&stbinfo=&prmid=&easip=172.16.5.214&networkid=1"
+            f"&stbtype=EC2106V1H_pub&drmsupplier="
+        )
+        session.post(
+            f"{host}/iptvepg/function/funcportalauth.jsp",
+            data=payload,
+            headers={**headers,
+                "Referer": f"{host}/iptvepg/function/index.jsp?loadbalanced=0",
+                "Origin": f"{host}",
+            },
+            timeout=10
+        )
+    except Exception:
+        pass
 
 
 # ========== 动态 Authenticator 生成 ==========
@@ -225,52 +272,20 @@ def get_user_token(force_refresh=False):
                     # 写入缓存
                     _token_cache["token"] = token_jsessionid
                     _token_cache["time"] = now
-                    get_stbid(user_token, jsessionid)
                     return token_jsessionid
     except requests.exceptions.RequestException as e:
         log_message(f"网络请求失败：{str(e)}")
         return None
 
 
-def get_stbid(user_token, jsessionid):
-    url = f"{BASE_URL}/iptvepg/function/index.jsp"
-    querystring = {
-        "UserGroupNMB": "31",
-        "EPGGroupNMB": "31",
-        "UserToken": user_token,
-        "UserID": USER_ID,
-        "STBID": STBID,
-        "easip": "172.16.5.214",
-        "networkid": "1",
-        "loadbalanced": "-1"}
-    headers = {
-        "Accept-Encoding": "deflate, gzip",
-        "Origin": "http://epg.itv.cq.cn:8080",
-        "User-Agent": USER_AGENT,
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5",
-        "Connection": "Keep-Alive",
-        "cookie": "JSESSIONID=" + jsessionid + ""
-    }
-    requests.request("GET", url, headers=headers, params=querystring)
-    post_sessionid(user_token, jsessionid)
-
-
-def post_sessionid(user_token, jsessionid):
-    url = f"{BASE_URL}/iptvepg/function/funcportalauth.jsp"
-    payload = f"UserToken={user_token}&UserID={USER_ID}&STBID={STBID}&stbinfo=&prmid=&easip=172.16.5.214&networkid=1&stbtype=EC2106V1H_pub&drmsupplier="
-    headers = {
-        "Accept-Encoding": "deflate, gzip",
-        "Origin": "http://epg.itv.cq.cn:8080",
-        "User-Agent": USER_AGENT,
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5",
-        "Connection": "Keep-Alive",
-        "Content-Length": "189",
-        "cookie": "JSESSIONID=" + jsessionid + ""
-
-    }
-    requests.request("POST", url, data=payload, headers=headers)
+def _init_channel_session(jsessionid):
+    """初始化频道服务会话（BASE_URL）"""
+    token = _token_cache["token"][0] if _token_cache.get("token") else ""
+    if not token:
+        return
+    session = requests.Session()
+    session.cookies.set("JSESSIONID", jsessionid)
+    _init_service_session(session, token, BASE_URL)
 
 
 def log_message(message):
@@ -283,15 +298,33 @@ def get_channels():
     if not user_token:
         log_message("获取用户token失败")
         return "同步失败：无法获取用户token"
+
+    # 在 BASE_URL 上初始化频道会话
+    _init_channel_session(user_token[1])
+
+    # 尝试获取频道列表，最多重试 2 次（JESSIONID 可能过期）
+    for attempt in range(2):
+        result = _do_fetch_channels(user_token)
+        if result == "retry":
+            log_message("会话可能过期，强制刷新 token 重试")
+            user_token = get_user_token(force_refresh=True)
+            if not user_token:
+                return "同步失败：刷新token失败"
+            continue
+        return result
+    return "同步失败！"
+
+
+def _do_fetch_channels(user_token):
+    """执行一次频道列表获取，返回成功/失败/需要重试"""
     url = f"{BASE_URL}/iptvepg/function/frameset_builder.jsp"
     payload = "MAIN_WIN_SRC=/iptvepg/frame1341/portal.jsp&NEED_UPDATE_STB=1&BUILD_ACTION=FRAMESET_BUILDER&hdmistatus=undefined"
     headers = {
         "Accept-Encoding": "deflate, gzip",
-        "Origin": "http://172.23.34.169:8080",
+        "Origin": f"{BASE_URL}",
         "User-Agent": USER_AGENT,
         "Accept": "application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5",
         "Connection": "Keep-Alive",
-        "Content-Length": "117",
         "content-type": "application/x-www-form-urlencoded",
         "cookie": "JSESSIONID=" + user_token[1] + "",
         "SessionID": user_token[1]
@@ -381,8 +414,10 @@ def get_channels():
             log_message(f"更新成功，获取到 {len(channels_udpxy)} 个UDPXY频道，{len(channels_rtsp)} 个RTSP频道")
             return "同步成功！"
         else:
-            log_message("频道数据获取失败")
-            return "同步失败！"
+            # 无频道数据 - 可能是 JSESSIONID 过期
+            resp_preview = response.text[:200]
+            log_message(f"频道数据获取失败，响应前200字符: {resp_preview}")
+            return "retry"
     else:
         return f"访问失败！ {response.status_code}"
 
@@ -542,46 +577,8 @@ def fetch_all_epg(max_workers=10, date_indexes=None):
         cid, cname = item
         import requests as req
         session = req.Session()
-        headers = {
-            "Accept-Encoding": "deflate, gzip",
-            "Origin": f"{EPG_HOST}",
-            "User-Agent": USER_AGENT,
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Connection": "Keep-Alive",
-        }
-        # 初始化会话
-        try:
-            session.get(
-                f"{EPG_HOST}/iptvepg/function/index.jsp",
-                params={
-                    "UserGroupNMB": "31", "EPGGroupNMB": "31",
-                    "UserToken": token, "UserID": USER_ID, "STBID": STBID,
-                    "easip": "172.16.5.214", "networkid": "1", "loadbalanced": "-1"
-                },
-                headers={**headers, "Referer": f"{EPG_HOST}/iptvepg/function/index.jsp"},
-                timeout=10
-            )
-        except Exception:
-            pass
-        # funcportalauth
-        try:
-            payload = (
-                f"UserToken={token}&UserID={USER_ID}&STBID={STBID}"
-                f"&stbinfo=&prmid=&easip=172.16.5.214&networkid=1"
-                f"&stbtype=EC2106V1H_pub&drmsupplier="
-            )
-            session.post(
-                f"{EPG_HOST}/iptvepg/function/funcportalauth.jsp",
-                data=payload,
-                headers={**headers,
-                    "Referer": f"{EPG_HOST}/iptvepg/function/index.jsp?loadbalanced=0",
-                    "Origin": f"{EPG_HOST}",
-                },
-                timeout=10
-            )
-        except Exception:
-            pass
+        # 在 EPG_HOST 上初始化会话
+        _init_service_session(session, token, EPG_HOST)
         # rebuild
         rebuild_epg_session(session, token, cid)
         # 获取 EPG
@@ -635,6 +632,7 @@ def build_xmltv(programs):
 # 内存缓存，避免频繁读取 epg_cache.json
 _epg_memory_cache = None
 _epg_memory_cache_time = 0
+_epg_fetch_lock = threading.Lock()  # 防止并发抓取 EPG
 
 def get_epg(refresh=False, days=8):
     """获取 EPG 数据，优先使用缓存
@@ -644,60 +642,79 @@ def get_epg(refresh=False, days=8):
     cache_file = 'static/epg_cache.json'
     xml_file = 'static/epg.xml'
 
+    now_ts = time.time()
+
+    # 不加锁快速路径：缓存命中且未过期
     if not refresh:
-        # 内存缓存（30秒有效，避免频繁读盘）
-        now = time.time()
-        if _epg_memory_cache is not None and now - _epg_memory_cache_time < 30:
+        if _epg_memory_cache is not None and now_ts - _epg_memory_cache_time < 30:
             return _epg_memory_cache
-        # 尝试从文件缓存读取
         try:
             with open(cache_file, 'r', encoding='utf-8') as f:
                 cached = json.load(f)
                 cache_time = cached.get('cache_time', 0)
                 cache_days = cached.get('days', 0)
-                if datetime.now().timestamp() - cache_time < 3600 and cache_days == days:
-                    programs = cached.get('programs', [])
-                    _epg_memory_cache = programs
-                    _epg_memory_cache_time = time.time()
-                    return programs
+                if now_ts - cache_time < 3600 and cache_days == days:
+                    _epg_memory_cache = cached.get('programs', [])
+                    _epg_memory_cache_time = now_ts
+                    return _epg_memory_cache
         except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
             try:
                 os.remove(cache_file)
             except OSError:
                 pass
 
-    # 计算需要抓取的日期索引
-    # EPG 服务器: dateIndex:-6~-1=过去6天, 0=今天(dS=2), 1=明天
-    # days=8 -> 过去6天 + 今天 + 明天 = 8天
-    if days >= 2:
-        past_days = max(days - 2, 1)
-        date_indexes = list(range(-past_days, 2))  # 过去N天 + 今天(0) + 明天(1)
-    else:
-        date_indexes = [0]
+    # 需要重新抓取 → 加锁，防止并发
+    acquired = _epg_fetch_lock.acquire(timeout=600)  # 最多等 10 分钟
+    if not acquired:
+        log_message("EPG: 无法获取锁，返回空")
+        return []
 
-    # 重新获取
-    programs = fetch_all_epg(date_indexes=date_indexes)
+    try:
+        # 双检锁：拿到锁后再检查一次缓存（可能已被其他线程更新）
+        if not refresh:
+            if _epg_memory_cache is not None and now_ts - _epg_memory_cache_time < 60:
+                return _epg_memory_cache
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    cached = json.load(f)
+                    if now_ts - cached.get('cache_time', 0) < 3600 and cached.get('days') == days:
+                        _epg_memory_cache = cached.get('programs', [])
+                        _epg_memory_cache_time = now_ts
+                        return _epg_memory_cache
+            except Exception:
+                pass
 
-    # 写入内存缓存
-    _epg_memory_cache = programs
-    _epg_memory_cache_time = time.time()
+        # 计算需要抓取的日期索引
+        if days >= 2:
+            past_days = max(days - 2, 1)
+            date_indexes = list(range(-past_days, 2))
+        else:
+            date_indexes = [0]
 
-    # 保存文件缓存
-    cache_data = {
-        'cache_time': datetime.now().timestamp(),
-        'days': days,
-        'programs': programs
-    }
-    with open(cache_file, 'w', encoding='utf-8') as f:
-        json.dump(cache_data, f, ensure_ascii=False, indent=2)
+        programs = fetch_all_epg(date_indexes=date_indexes)
 
-    # 生成并保存 XMLTV
-    xmltv = build_xmltv(programs)
-    with open(xml_file, 'w', encoding='utf-8') as f:
-        f.write(xmltv)
+        # 写入内存缓存
+        _epg_memory_cache = programs
+        _epg_memory_cache_time = time.time()
 
-    log_message(f"EPG 更新完成，获取到 {len(programs)} 个节目（天数: {days}）")
-    return programs
+        # 保存文件缓存
+        cache_data = {
+            'cache_time': datetime.now().timestamp(),
+            'days': days,
+            'programs': programs
+        }
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, ensure_ascii=False, indent=2)
+
+        # 生成并保存 XMLTV
+        xmltv = build_xmltv(programs)
+        with open(xml_file, 'w', encoding='utf-8') as f:
+            f.write(xmltv)
+
+        log_message(f"EPG 更新完成，获取到 {len(programs)} 个节目（天数: {days}）")
+        return programs
+    finally:
+        _epg_fetch_lock.release()
 
 
 @app.route('/')
