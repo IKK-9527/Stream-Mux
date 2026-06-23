@@ -1,7 +1,7 @@
 from flask import Flask, send_from_directory, request, render_template, jsonify, flash, redirect, url_for, Response
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from main import get_channels, index, save_config, get_sync_info, get_epg  # 从 main.py 导入所需函数
+from main import get_channels, index, save_config, get_sync_info, get_epg, cleanup_logs  # 从 main.py 导入所需函数
 import requests
 import json
 import re
@@ -288,14 +288,17 @@ def job():
         get_channels()  # 同步频道列表
         get_epg(refresh=True)  # 同步 EPG 节目数据
 
-# 启动调度器（每天随机时间 13:00~16:59 执行）
+# 启动调度器（每天随机时间 13:00~16:59 执行 + 每小时日志清理）
 def start_scheduler():
     scheduler = BackgroundScheduler()
+    # 频道 + EPG 同步（每天一次）
     rand_hour = random.randint(13, 16)
     rand_min = random.randint(0, 59)
     trigger = CronTrigger(hour=rand_hour, minute=rand_min)
     scheduler.add_job(job, trigger)
-    print(f"定时任务已启动: 每天 {rand_hour:02d}:{rand_min:02d} 自动同步")
+    # 日志清理（每小时执行一次）
+    scheduler.add_job(cleanup_logs, 'interval', hours=1)
+    print(f"定时任务已启动: 每天 {rand_hour:02d}:{rand_min:02d} 自动同步 + 每小时日志清理")
     scheduler.start()
 
 # 在应用启动时启动调度器

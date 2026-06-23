@@ -293,6 +293,41 @@ def log_message(message):
         file.write(f"{datetime.now()} {message}\n")
 
 
+def cleanup_logs():
+    """清理超过 24 小时的日志"""
+    import shutil
+    log_file = 'static/relogs.txt'
+    tmp_file = 'static/relogs.tmp'
+    now = datetime.now()
+    kept = 0
+    removed = 0
+    try:
+        with open(log_file, 'r', encoding='utf-8') as fin, \
+             open(tmp_file, 'w', encoding='utf-8') as fout:
+            for line in fin:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ts_str = line[:19]
+                    ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+                    if (now - ts).total_seconds() < 86400:
+                        fout.write(line + '\n')
+                        kept += 1
+                    else:
+                        removed += 1
+                except ValueError:
+                    fout.write(line + '\n')
+                    kept += 1
+        shutil.move(tmp_file, log_file)
+        if removed > 0:
+            print(f"[AutoIPTV] 日志清理: 保留 {kept} 条, 清理 {removed} 条")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"[AutoIPTV] 日志清理失败: {e}")
+
+
 def get_channels():
     user_token = get_user_token()
     if not user_token:
