@@ -557,17 +557,18 @@ function copyEpgUrl() {
 // ========== Dashboard ==========
 async function loadDashboard() {
     try {
-        var [chData, epgData, rtspData] = await Promise.all([
+        // 先加载频道和 RTSP 状态（不依赖 EPG）
+        var [chData, rtspData] = await Promise.all([
             fetch('/refresh_channels').then(r => r.text()),
-            fetch('/api/epg/stats').then(r => r.json()),
             fetch('/rtsp_status').then(r => r.json())
         ]);
         var chCount = chData.split('\n').filter(l => l.trim()).length;
         document.getElementById('stat-channels').textContent = chCount;
         document.getElementById('nav-channel-count').textContent = chCount;
         document.getElementById('stat-rtsp').textContent = rtspData.rtsp_channel_count || '-';
-        document.getElementById('stat-epg').textContent = (epgData.total || 0).toLocaleString();
-        document.getElementById('nav-epg-count').textContent = (epgData.total || 0).toLocaleString();
+
+        // EPG 数据单独异步加载，不阻塞仪表盘渲染
+        loadEpgStatsAsync();
 
         // RTSP status
         var statusEl = document.getElementById('stat-rtsp-status');
@@ -588,6 +589,17 @@ async function loadDashboard() {
             (rtspData.session_hint ? '<div class="text-muted" style="font-size:13px">' + rtspData.session_hint + '</div>' : '') +
             '</div>';
     } catch(e) { /* ignore */ }
+}
+
+// 异步加载 EPG 统计（不阻塞仪表盘）
+async function loadEpgStatsAsync() {
+    try {
+        var epgData = await fetch('/api/epg/stats').then(r => r.json());
+        document.getElementById('stat-epg').textContent = (epgData.total || 0).toLocaleString();
+        document.getElementById('nav-epg-count').textContent = (epgData.total || 0).toLocaleString();
+    } catch(e) {
+        document.getElementById('stat-epg').textContent = '加载中...';
+    }
 }
 
 // ========== Channels ==========
@@ -802,17 +814,38 @@ async function syncChannels() {
 }
 
 async function refreshEpg() {
-    showToast('正在后台刷新 EPG 数据...', 'info');
+    showToast('正在后台刷新 EPG 数据，完成后将通知您...', 'info');
     try {
         var res = await fetch('/refresh_epg').then(r => r.json());
         if (res.success) {
-            showToast('EPG 刷新完成：' + res.message, 'success');
-            loadDashboard();
-            if (document.getElementById('page-epg').classList.contains('active')) loadEpgData();
+            // 轮询等待异步 EPG 完成
+            pollEpgCompletion();
         } else {
-            showToast('EPG 刷新失败：' + res.message, 'error');
+            showToast('EPG 刷新启动失败：' + res.message, 'error');
         }
     } catch(e) { showToast('EPG 刷新请求失败', 'error'); }
+}
+
+// 轮询 EPG 异步抓取完成状态
+var _epgPollTimer = null;
+function pollEpgCompletion() {
+    if (_epgPollTimer) clearInterval(_epgPollTimer);
+    _epgPollTimer = setInterval(async function() {
+        try {
+            var status = await fetch('/api/epg/fetch_status').then(r => r.json());
+            if (!status.running) {
+                clearInterval(_epgPollTimer);
+                _epgPollTimer = null;
+                if (status.last_error) {
+                    showToast('EPG 刷新失败：' + status.last_error, 'error');
+                } else {
+                    showToast('EPG 刷新完成！', 'success');
+                }
+                loadDashboard();
+                if (document.getElementById('page-epg').classList.contains('active')) loadEpgData();
+            }
+        } catch(e) { /* 忽略轮询错误 */ }
+    }, 2000); // 每2秒轮询一次
 }
 
 // ========== Init ==========

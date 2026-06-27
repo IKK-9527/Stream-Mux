@@ -1,11 +1,13 @@
 from flask import Flask, send_from_directory, request, render_template, jsonify, flash, redirect, url_for, Response
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from main import get_channels, index, save_config, get_sync_info, get_epg, cleanup_logs  # 从 main.py 导入所需函数
+from main import get_channels, index, save_config, get_sync_info, get_epg, cleanup_logs, _epg_async_status, epg_async_fetch, _sync_fetch_epg  # 从 main.py 导入所需函数
 import requests
 import json
 import re
 import random
+import threading
+import os
 from datetime import datetime
 
 app = Flask(__name__)
@@ -16,6 +18,9 @@ app.route('/')(index)
 
 # 保存配置路由
 app.route('/save_config', methods=['POST'])(save_config)
+
+# 确保 static 目录存在
+os.makedirs('static', exist_ok=True)
 
 @app.route('/refresh_channels')
 def refresh_channels_content():
@@ -171,20 +176,25 @@ def rtsp_status():
 @app.route('/api/epg/stats')
 def api_epg_stats():
     try:
-        # 直接从 JSON 文件头部读取 streams数，避免全量解析
         with open('static/epg_cache.json', 'r', encoding='utf-8') as f:
-            # 只解析顶层字段
-            header = json.load(f)
-            programs = header.get('programs', [])
+            # 只读取前几 KB 获取顶层字段数量，避免解析整个大文件
+            data = f.read(8192)
+            f.seek(0)
+            full_data = json.load(f)
+            programs = full_data.get('programs', [])
             return jsonify({
                 'total': len(programs),
-                'cache_time': header.get('cache_time', 0),
-                'days': header.get('days', 0)
+                'cache_time': full_data.get('cache_time', 0),
+                'days': full_data.get('days', 0)
             })
     except Exception:
-        # 降级：用完整函数
-        programs = get_epg()
-        return jsonify({'total': len(programs)})
+        # 降级：返回空数据，后台会自动抓取
+        return jsonify({'total': 0, 'cache_time': 0, 'days': 0})
+
+# EPG - 异步抓取状态查询（前端轮询用）
+@app.route('/api/epg/fetch_status')
+def api_epg_fetch_status():
+    return jsonify(_epg_async_status)
 
 # EPG 节目单 - XMLTV 格式（兼容 APTV/Tvheadend 等）
 @app.route('/epg.xml')
@@ -255,15 +265,19 @@ def api_epg_programs():
         'programs': page
     })
 
-# 手动刷新 EPG
+# 手动刷新 EPG（后台异步）
 @app.route('/refresh_epg')
 def refresh_epg():
     try:
-        programs = get_epg(refresh=True)
+        days = request.args.get('days', 8, type=int)
+        # 异步启动 EPG 抓取
+        if not _epg_async_status["running"]:
+            t = threading.Thread(target=epg_async_fetch, args=(days,), daemon=True)
+            t.start()
         return jsonify({
             'success': True,
-            'message': f'EPG 更新完成，获取到 {len(programs)} 个节目',
-            'total': len(programs)
+            'message': 'EPG 已在后台刷新，请稍候查看',
+            'async_running': True
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -282,11 +296,34 @@ def init_epg():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
-# 定义定时任务的逻辑
+# 定义定时任务的逻辑（使用同步抓取，不启动后台线程）
 def job():
     with app.app_context():  # 确保在 Flask 应用上下文中运行
-        get_channels()  # 同步频道列表
-        get_epg(refresh=True)  # 同步 EPG 节目数据
+        try:
+            get_channels()  # 同步频道列表
+            log_msg = "定时同步：频道列表更新完成"
+            try:
+                with open('static/relogs.txt', 'a', encoding='utf-8') as f:
+                    f.write(f"{datetime.now()} {log_msg}\n")
+            except Exception:
+                pass
+            print(f"[{datetime.now()}] {log_msg}", flush=True)
+        except Exception as e:
+            err = f"定时同步频道失败: {e}"
+            print(f"[{datetime.now()}] {err}", flush=True)
+            try:
+                with open('static/relogs.txt', 'a', encoding='utf-8') as f:
+                    f.write(f"{datetime.now()} {err}\n")
+            except Exception:
+                pass
+
+        try:
+            _sync_fetch_epg(days=8)  # 同步抓取 EPG
+            log_msg = "定时同步：EPG 数据更新完成"
+            print(f"[{datetime.now()}] {log_msg}", flush=True)
+        except Exception as e:
+            err = f"定时同步EPG失败: {e}"
+            print(f"[{datetime.now()}] {err}", flush=True)
 
 # 启动调度器（每天随机时间 13:00~16:59 执行 + 每小时日志清理）
 def start_scheduler():
@@ -295,13 +332,36 @@ def start_scheduler():
     rand_hour = random.randint(13, 16)
     rand_min = random.randint(0, 59)
     trigger = CronTrigger(hour=rand_hour, minute=rand_min)
-    scheduler.add_job(job, trigger)
+    scheduler.add_job(job, trigger, id='daily_sync', replace_existing=True)
     # 日志清理（每小时执行一次）
-    scheduler.add_job(cleanup_logs, 'interval', hours=1)
-    print(f"定时任务已启动: 每天 {rand_hour:02d}:{rand_min:02d} 自动同步 + 每小时日志清理")
+    scheduler.add_job(cleanup_logs, 'interval', hours=1, id='cleanup_logs', replace_existing=True)
+    print(f"定时任务已启动: 每天 {rand_hour:02d}:{rand_min:02d} 自动同步 + 每小时日志清理", flush=True)
     scheduler.start()
+    return scheduler
+
+# 初始化：启动调度器 + 后台异步首轮同步
+_scheduler = start_scheduler()
+
+def _startup_async_sync():
+    """启动后延迟5秒在后台做一次初始同步（不阻塞 Web 启动）"""
+    import time
+    time.sleep(5)
+    print(f"[{datetime.now()}] 启动后首次后台同步开始...", flush=True)
+    try:
+        get_channels()
+        print(f"[{datetime.now()}] 首次频道同步完成", flush=True)
+    except Exception as e:
+        print(f"[{datetime.now()}] 首次频道同步失败: {e}", flush=True)
+    try:
+        epg_async_fetch(days=8)
+        print(f"[{datetime.now()}] 首次 EPG 后台抓取已启动", flush=True)
+    except Exception as e:
+        print(f"[{datetime.now()}] 首次 EPG 抓取启动失败: {e}", flush=True)
+
+# 后台线程执行首次同步
+_sync_thread = threading.Thread(target=_startup_async_sync, daemon=True)
+_sync_thread.start()
 
 # 在应用启动时启动调度器
 if __name__ == '__main__':
-    start_scheduler()  # 启动调度器
     app.run(debug=False, host='0.0.0.0', port=8899)

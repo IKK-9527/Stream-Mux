@@ -289,8 +289,12 @@ def _init_channel_session(jsessionid):
 
 
 def log_message(message):
-    with open('static/relogs.txt', 'a', encoding='utf-8') as file:
-        file.write(f"{datetime.now()} {message}\n")
+    try:
+        os.makedirs('static', exist_ok=True)
+        with open('static/relogs.txt', 'a', encoding='utf-8') as file:
+            file.write(f"{datetime.now()} {message}\n")
+    except Exception as e:
+        print(f"[AutoIPTV] 写日志失败: {e}", flush=True)
 
 
 def cleanup_logs():
@@ -669,8 +673,58 @@ _epg_memory_cache = None
 _epg_memory_cache_time = 0
 _epg_fetch_lock = threading.Lock()  # 防止并发抓取 EPG
 
-def get_epg(refresh=False, days=8):
+# ========== 异步 EPG 抓取 ==========
+_epg_async_status = {"running": False, "last_error": None, "progress": ""}
+
+
+def epg_async_fetch(days=8):
+    """后台线程：异步抓取 EPG，不阻塞 Web 请求"""
+    global _epg_memory_cache, _epg_memory_cache_time, _epg_async_status
+    if _epg_async_status["running"]:
+        return
+    _epg_async_status["running"] = True
+    _epg_async_status["last_error"] = None
+    _epg_async_status["progress"] = "正在抓取 EPG 数据..."
+    try:
+        log_message("后台异步抓取 EPG 开始...")
+        # 计算日期范围
+        today = datetime.now()
+        date_indexes = [i for i in range(-(days - 2), 2)]  # days-2天前 ~ 明天
+        programs = fetch_all_epg(date_indexes=date_indexes)
+        if programs:
+            now_ts = time.time()
+            # 保存到文件缓存
+            cache_file = 'static/epg_cache.json'
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    "programs": programs,
+                    "cache_time": now_ts,
+                    "days": days
+                }, f, indent=2, ensure_ascii=False)
+            # 生成 XMLTV
+            xml_data = build_xmltv(programs)
+            with open('static/epg.xml', 'w', encoding='utf-8') as f:
+                f.write(xml_data)
+            # 更新内存缓存
+            _epg_memory_cache = programs
+            _epg_memory_cache_time = now_ts
+            log_message(f"后台异步抓取 EPG 完成，共 {len(programs)} 个节目")
+            _epg_async_status["progress"] = f"EPG 抓取完成，共 {len(programs)} 个节目"
+        else:
+            log_message("后台异步抓取 EPG 完成，未获取到数据")
+            _epg_async_status["progress"] = "EPG 未获取到数据"
+    except Exception as e:
+        err_msg = f"后台异步抓取 EPG 失败: {str(e)}"
+        log_message(err_msg)
+        _epg_async_status["last_error"] = str(e)
+        _epg_async_status["progress"] = err_msg
+    finally:
+        _epg_async_status["running"] = False
+
+def get_epg(refresh=False, days=8, async_fetch=True):
     """获取 EPG 数据，优先使用缓存
+    async_fetch=True: 缓存过期时后台异步抓取，立即返回旧缓存（不阻塞HTTP请求）
+    refresh=True: 强制后台刷新
     days: 抓取天数，默认8天=过去6天(回看)+今天+明天"""
     global _epg_memory_cache, _epg_memory_cache_time
 
@@ -679,77 +733,84 @@ def get_epg(refresh=False, days=8):
 
     now_ts = time.time()
 
-    # 不加锁快速路径：缓存命中且未过期
+    # 1. 内存缓存（当前进程有效，30秒内直接返回）
     if not refresh:
         if _epg_memory_cache is not None and now_ts - _epg_memory_cache_time < 30:
             return _epg_memory_cache
-        try:
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                cached = json.load(f)
-                cache_time = cached.get('cache_time', 0)
-                cache_days = cached.get('days', 0)
-                if now_ts - cache_time < 3600 and cache_days == days:
-                    _epg_memory_cache = cached.get('programs', [])
-                    _epg_memory_cache_time = now_ts
-                    return _epg_memory_cache
-        except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
-            try:
-                os.remove(cache_file)
-            except OSError:
-                pass
 
-    # 需要重新抓取 → 加锁，防止并发
-    acquired = _epg_fetch_lock.acquire(timeout=600)  # 最多等 10 分钟
-    if not acquired:
-        log_message("EPG: 无法获取锁，返回空")
-        return []
-
+    # 2. 尝试读文件缓存
+    cached_ok = False
+    cached_programs = []
     try:
-        # 双检锁：拿到锁后再检查一次缓存（可能已被其他线程更新）
-        if not refresh:
-            if _epg_memory_cache is not None and now_ts - _epg_memory_cache_time < 60:
-                return _epg_memory_cache
-            try:
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    cached = json.load(f)
-                    if now_ts - cached.get('cache_time', 0) < 3600 and cached.get('days') == days:
-                        _epg_memory_cache = cached.get('programs', [])
-                        _epg_memory_cache_time = now_ts
-                        return _epg_memory_cache
-            except Exception:
-                pass
+        with open(cache_file, 'r', encoding='utf-8') as f:
+            cached = json.load(f)
+            cache_time = cached.get('cache_time', 0)
+            cache_days = cached.get('days', 0)
+            if now_ts - cache_time < 3600 and cache_days == days:
+                _epg_memory_cache = cached.get('programs', [])
+                _epg_memory_cache_time = now_ts
+                cached_programs = _epg_memory_cache
+                cached_ok = True
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+        try:
+            os.remove(cache_file)
+        except OSError:
+            pass
 
-        # 计算需要抓取的日期索引
-        if days >= 2:
-            past_days = max(days - 2, 1)
-            date_indexes = list(range(-past_days, 2))
-        else:
-            date_indexes = [0]
+    if cached_ok and not refresh:
+        return cached_programs
 
-        programs = fetch_all_epg(date_indexes=date_indexes)
-
-        # 写入内存缓存
-        _epg_memory_cache = programs
-        _epg_memory_cache_time = time.time()
-
-        # 保存文件缓存
-        cache_data = {
-            'cache_time': datetime.now().timestamp(),
-            'days': days,
-            'programs': programs
-        }
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(cache_data, f, ensure_ascii=False, indent=2)
-
-        # 生成并保存 XMLTV
-        xmltv = build_xmltv(programs)
-        with open(xml_file, 'w', encoding='utf-8') as f:
-            f.write(xmltv)
-
-        log_message(f"EPG 更新完成，获取到 {len(programs)} 个节目（天数: {days}）")
+    # 3. 需要抓取
+    if async_fetch:
+        # 后台异步：启动后台线程抓取，立即返回缓存数据（即使过期）
+        if not _epg_async_status["running"]:
+            t = threading.Thread(target=epg_async_fetch, args=(days,), daemon=True)
+            t.start()
+            log_message("EPG: 后台异步抓取已启动")
+        if cached_ok:
+            return cached_programs
+        # 没有缓存时返回空（前台会显示加载中）
+        return []
+    else:
+        # 同步抓取（定时任务使用）
+        programs = _sync_fetch_epg(days)
         return programs
-    finally:
-        _epg_fetch_lock.release()
+
+
+def _sync_fetch_epg(days=8):
+    """同步抓取 EPG（定时任务使用，不启动后台线程）"""
+    cache_file = 'static/epg_cache.json'
+    xml_file = 'static/epg.xml'
+
+    # 计算需要抓取的日期索引
+    if days >= 2:
+        past_days = max(days - 2, 1)
+        date_indexes = list(range(-past_days, 2))
+    else:
+        date_indexes = [0]
+
+    programs = fetch_all_epg(date_indexes=date_indexes)
+
+    # 写入内存缓存
+    _epg_memory_cache = programs
+    _epg_memory_cache_time = time.time()
+
+    # 保存文件缓存
+    cache_data = {
+        'cache_time': datetime.now().timestamp(),
+        'days': days,
+        'programs': programs
+    }
+    with open(cache_file, 'w', encoding='utf-8') as f:
+        json.dump(cache_data, f, ensure_ascii=False, indent=2)
+
+    # 生成并保存 XMLTV
+    xmltv = build_xmltv(programs)
+    with open(xml_file, 'w', encoding='utf-8') as f:
+        f.write(xmltv)
+
+    log_message(f"EPG 更新完成，获取到 {len(programs)} 个节目（天数: {days}）")
+    return programs
 
 
 @app.route('/')
