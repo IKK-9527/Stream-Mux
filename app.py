@@ -2,6 +2,7 @@ from flask import Flask, send_from_directory, request, render_template, jsonify,
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from main import get_channels, index, save_config, get_sync_info, get_epg, cleanup_logs, _epg_async_status, epg_async_fetch, _sync_fetch_epg  # 从 main.py 导入所需函数
+from config import load_config
 import requests
 import json
 import re
@@ -11,7 +12,9 @@ import os
 from datetime import datetime
 
 app = Flask(__name__)
-app.secret_key = 'your_secret_key'  # 用于flash消息
+# 从配置获取 secret_key（环境变量 / config.json → 默认值）
+_cfg = load_config()
+app.secret_key = _cfg.get('SECRET_KEY', 'change-me-to-a-random-string')
 
 # 主页路由
 app.route('/')(index)

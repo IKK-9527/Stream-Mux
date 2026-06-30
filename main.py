@@ -17,25 +17,31 @@ import dns.resolver
 import threading
 
 app = Flask(__name__)  # 添加这行，确保在使用 flash 之前定义
-app.secret_key = 'your_secret_key'  # 添加这行，用于 flash 消息加密
 
 
 # 加载配置
 config = load_config()
+
+# 从配置中获取 secret_key（环境变量 / config.json → 默认值）
+app.secret_key = config.get('SECRET_KEY', 'change-me-to-a-random-string')
+
 BASE_URL = config['BASE_URL']
 USER_ID = config['USER_ID']
 STBID = config['STBID']
 USER_AGENT = config['USER_AGENT']
 Authenticator = config['Authenticator']
 UDPXY = config['UDPXY']
-EPG_HOST = config.get('EPG_HOST', 'http://172.23.35.201:8080')
+EPG_HOST = config.get('EPG_HOST', '')
 # 动态 Authenticator 生成相关
-STB_IP = config.get('STB_IP', '172.34.24.71')
+STB_IP = config.get('STB_IP', '')
 STB_TYPE = config.get('STB_TYPE', '')
 MAC = config.get('MAC', '')
 ENCRYPT_KEY = config.get('ENCRYPT_KEY', '')
-DNS_SERVERS = config.get('DNS_SERVERS', '172.16.5.144,172.16.5.145')
+DNS_SERVERS = config.get('DNS_SERVERS', '')
 EAS_DOMAIN = config.get('EAS_DOMAIN', 'epg.itv.cq.cn')
+# EAS 会话参数（通过 .env 或 config.json 配置）
+EAS_SESSION_IP = config.get('EAS_SESSION_IP', '')
+EAS_STB_TYPE = config.get('EAS_STB_TYPE', '')
 
 # ========== Token 缓存 ==========
 # Token 有效期 48 小时，避免频繁重新认证
@@ -82,7 +88,7 @@ def _init_service_session(session, token, host):
             params={
                 "UserGroupNMB": "31", "EPGGroupNMB": "31",
                 "UserToken": token, "UserID": USER_ID, "STBID": STBID,
-                "easip": "172.16.5.214", "networkid": "1", "loadbalanced": "-1"
+                "easip": EAS_SESSION_IP, "networkid": "1", "loadbalanced": "-1"
             },
             headers={**headers, "Referer": f"{host}/iptvepg/function/index.jsp"},
             timeout=10
@@ -93,8 +99,8 @@ def _init_service_session(session, token, host):
     try:
         payload = (
             f"UserToken={token}&UserID={USER_ID}&STBID={STBID}"
-            f"&stbinfo=&prmid=&easip=172.16.5.214&networkid=1"
-            f"&stbtype=EC2106V1H_pub&drmsupplier="
+            f"&stbinfo=&prmid=&easip={EAS_SESSION_IP}&networkid=1"
+            f"&stbtype={EAS_STB_TYPE}&drmsupplier="
         )
         session.post(
             f"{host}/iptvepg/function/funcportalauth.jsp",
@@ -248,11 +254,11 @@ def get_user_token(force_refresh=False):
 
     try:
         url = f"{BASE_URL}/iptvepg/platform/auth.jsp"
-        querystring = {"easip": "172.16.5.214", "ipVersion": "4", "networkid": "1", "serterminalno": "9923"}
+        querystring = {"easip": EAS_SESSION_IP, "ipVersion": "4", "networkid": "1", "serterminalno": "9923"}
         payload = f"UserID={USER_ID}&Authenticator={auth_value}&StbIP={STB_IP}"
         headers = {
             "Accept-Encoding": "deflate, gzip",
-            "Origin": "http://epg.itv.cq.cn:8080",
+            "Origin": f"http://{EAS_DOMAIN}:8080",
             "User-Agent": USER_AGENT,
             "Accept": "application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5",
             "Connection": "Keep-Alive",
@@ -845,13 +851,15 @@ def save_config():
             'USER_AGENT': request.form.get('user_agent', '').strip(),
             'Authenticator': authenticator,
             'EPG_HOST': request.form.get('epg_host', '').strip(),
-            'STB_IP': request.form.get('stb_ip', '').strip() or '172.34.24.71',
+            'STB_IP': request.form.get('stb_ip', '').strip(),
             'STB_TYPE': request.form.get('stb_type', '').strip(),
             'MAC': request.form.get('mac', '').strip().upper(),
             'ENCRYPT_KEY': request.form.get('encrypt_key', '').strip(),
-            'DNS_SERVERS': request.form.get('dns_servers', '').strip() or '172.16.5.144,172.16.5.145',
-            'EAS_DOMAIN': request.form.get('eas_domain', '').strip() or 'epg.itv.cq.cn',
-            'EAS_IP': request.form.get('eas_ip', '').strip()
+            'DNS_SERVERS': request.form.get('dns_servers', '').strip(),
+            'EAS_DOMAIN': request.form.get('eas_domain', '').strip(),
+            'EAS_IP': request.form.get('eas_ip', '').strip(),
+            'EAS_SESSION_IP': request.form.get('eas_session_ip', '').strip(),
+            'EAS_STB_TYPE': request.form.get('eas_stb_type', '').strip()
         }
 
         # 保存配置
@@ -868,14 +876,16 @@ def save_config():
         USER_AGENT = new_config['USER_AGENT']
         Authenticator = new_config['Authenticator']
         UDPXY = new_config['UDPXY']
-        EPG_HOST = new_config.get('EPG_HOST', 'http://172.23.35.201:8080')
-        STB_IP = new_config.get('STB_IP', '172.34.24.71')
+        EPG_HOST = new_config.get('EPG_HOST', '')
+        STB_IP = new_config.get('STB_IP', '')
         STB_TYPE = new_config.get('STB_TYPE', '')
         MAC = new_config.get('MAC', '')
         ENCRYPT_KEY = new_config.get('ENCRYPT_KEY', '')
-        DNS_SERVERS = new_config.get('DNS_SERVERS', '172.16.5.144,172.16.5.145')
+        DNS_SERVERS = new_config.get('DNS_SERVERS', '')
         EAS_DOMAIN = new_config.get('EAS_DOMAIN', 'epg.itv.cq.cn')
         EAS_IP = new_config.get('EAS_IP', '').strip()
+        EAS_SESSION_IP = new_config.get('EAS_SESSION_IP', '')
+        EAS_STB_TYPE = new_config.get('EAS_STB_TYPE', '')
         # 清除 token 缓存（配置变更后强制重新认证）
         _token_cache["token"] = None
         _token_cache["time"] = 0
