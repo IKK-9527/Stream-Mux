@@ -407,7 +407,7 @@
                                 <input type="text" class="form-control" name="stbid" value="{{ config.STBID }}" required>
                             </div>
                             <div class="col-md-4">
-                                <label class="form-label">STB IP <span class="text-danger">*</span></label>
+                                <label class="form-label">STB IP</label>
                                 <input type="text" class="form-control" name="stb_ip" value="{{ config.get('STB_IP', '') }}" placeholder="机顶盒 IP 地址">
                             </div>
                             <div class="col-md-6">
@@ -439,11 +439,11 @@
                                 <input type="text" class="form-control" name="stb_type" value="{{ config.get('STB_TYPE', '') }}" placeholder="如: B860AV1.1-T2">
                             </div>
                             <div class="col-md-4">
-                                <label class="form-label">MAC 地址 <span class="text-danger">*</span></label>
-                                <input type="text" class="form-control" name="mac" value="{{ config.get('MAC', '') }}" placeholder="如: 00:11:22:33:44:55" pattern="^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$" title="MAC 地址格式: 00:11:22:33:44:55">
+                                <label class="form-label">MAC 地址</label>
+                                <input type="text" class="form-control" name="mac" value="{{ config.get('MAC', '') }}" placeholder="如: 00:11:22:33:44:55">
                             </div>
                             <div class="col-md-4">
-                                <label class="form-label">ENCRYPT_KEY <span class="text-danger">*</span></label>
+                                <label class="form-label">ENCRYPT_KEY</label>
                                 <input type="text" class="form-control" name="encrypt_key" value="{{ config.get('ENCRYPT_KEY', '') }}" placeholder="8位加密密钥，需从机顶盒获取或爆破">
                             </div>
                         </div>
@@ -459,8 +459,8 @@
                         </h6>
                         <div class="row g-3">
                             <div class="col-12">
-                                <label class="form-label">Authenticator <span class="text-danger">*</span></label>
-                                <input type="text" class="form-control" name="authenticator" value="{{ config.Authenticator }}" required>
+                                <label class="form-label">Authenticator</label>
+                                <input type="text" class="form-control" name="authenticator" value="{{ config.Authenticator }}">
                                 <small class="text-muted">当动态生成失败时使用此值。如果已启用动态认证，此字段可作为回退。</small>
                             </div>
                         </div>

@@ -838,12 +838,14 @@ def save_config():
         stbid = request.form.get('stbid', '').strip()
         authenticator = request.form.get('authenticator', '').strip()
 
-        if not all([user_id, stbid, authenticator]):
-            flash('USER_ID、STBID 和 Authenticator 为必填项')
+        if not all([user_id, stbid]):
+            flash('USER_ID 和 STBID 为必填项')
             return redirect(url_for('index'))
 
-        # 创建新的配置字典
-        new_config = {
+        # 从现有配置合并，保留无对应表单项的字段（DNS_SERVERS, EAS_* 等）
+        existing = load_config()
+        new_config = dict(existing)
+        new_config.update({
             'UDPXY': request.form.get('udpxy', '').strip(),
             'BASE_URL': request.form.get('base_url', '').strip(),
             'USER_ID': user_id,
@@ -855,16 +857,11 @@ def save_config():
             'STB_TYPE': request.form.get('stb_type', '').strip(),
             'MAC': request.form.get('mac', '').strip().upper(),
             'ENCRYPT_KEY': request.form.get('encrypt_key', '').strip(),
-            'DNS_SERVERS': request.form.get('dns_servers', '').strip(),
-            'EAS_DOMAIN': request.form.get('eas_domain', '').strip(),
-            'EAS_IP': request.form.get('eas_ip', '').strip(),
-            'EAS_SESSION_IP': request.form.get('eas_session_ip', '').strip(),
-            'EAS_STB_TYPE': request.form.get('eas_stb_type', '').strip()
-        }
+        })
 
-        # 保存配置
-        with open('static/config.json', 'w', encoding='utf-8') as f:
-            json.dump(new_config, f, indent=4, ensure_ascii=False)
+        # 保存配置（统一走 config.save_config 路径）
+        from config import save_config as cfg_save
+        cfg_save(new_config)
 
         # 更新全局配置变量
         global config, BASE_URL, USER_ID, STBID, USER_AGENT, Authenticator, UDPXY, EPG_HOST
